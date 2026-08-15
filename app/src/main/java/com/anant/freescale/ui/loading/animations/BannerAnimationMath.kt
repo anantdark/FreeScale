@@ -17,6 +17,10 @@ import kotlin.math.sin
  * - [angularVel]: rad/ms — strictly decreasing inner → outer (Kepler)
  * - [bodyScale]: relative planet disk size
  * - [hasRing]: faint Saturn-style ring
+ * - [litColor] / [shadeColor]: day / night limb tones for terminator lighting
+ * - [atmosphereColor] / [atmosphereAlpha]: soft albedo glow (0 = none)
+ * - [bandCount]: gas-giant banding stripes
+ * - [specular]: day-side highlight strength (0–1)
  */
 internal data class PlanetSpec(
     val orbitA: Float,
@@ -26,6 +30,15 @@ internal data class PlanetSpec(
     val color: Color,
     val bodyScale: Float = 1f,
     val hasRing: Boolean = false,
+    val litColor: Color = color,
+    val shadeColor: Color = color,
+    val atmosphereColor: Color = color,
+    val atmosphereAlpha: Float = 0f,
+    val bandCount: Int = 0,
+    val specular: Float = 0.35f,
+    val index: Int = 0,
+    /** Spin rate in rad per scaled ms — slower outer worlds. */
+    val spinRate: Float = 0.0012f,
 )
 
 // ---------------------------------------------------------------------------
@@ -131,36 +144,116 @@ internal const val SLOWEST_ORBITS_PER_TEMPO: Double = 0.09
 private data class BodyLook(
     val bodyScale: Float,
     val phase: Double,
+    val color: Color,
+    val litColor: Color,
+    val shadeColor: Color,
+    val atmosphereColor: Color = color,
+    val atmosphereAlpha: Float = 0f,
     val hasRing: Boolean = false,
+    val bandCount: Int = 0,
+    val specular: Float = 0.30f,
 )
 
 /**
  * Eight planets sized for a full instrument card. Orbits fan out from a
  * corner-anchored sun so the system sweeps the readout without crowding text.
+ * Colors lean astronomical rather than branding pastels.
  */
-internal fun solarSystemPlanets(protein: Color, carbs: Color, fats: Color): List<PlanetSpec> {
+internal fun solarSystemPlanets(): List<PlanetSpec> {
     val looks = listOf(
-        BodyLook(0.55f, 0.40), // Mercury — protein
-        BodyLook(0.78f, 1.90), // Venus — carbs
-        BodyLook(0.82f, 3.20), // Earth — fats
-        BodyLook(0.62f, 4.60), // Mars
-        BodyLook(1.65f, 5.80), // Jupiter
-        BodyLook(1.40f, 1.10, hasRing = true), // Saturn
-        BodyLook(1.10f, 2.70), // Uranus
-        BodyLook(1.05f, 4.90), // Neptune
-    )
-    val colors = listOf(
-        protein,
-        carbs,
-        fats,
-        Color(0xFFE57373),
-        Color(0xFFFFCC80),
-        Color(0xFFFFE082),
-        Color(0xFF80DEEA),
-        Color(0xFF64B5F6),
+        // Mercury — cratered grey rock
+        BodyLook(
+            bodyScale = 0.72f,
+            phase = 0.40,
+            color = Color(0xFF9A9590),
+            litColor = Color(0xFFD0CBC4),
+            shadeColor = Color(0xFF4A4642),
+            specular = 0.18f,
+        ),
+        // Venus — thick creamy atmosphere
+        BodyLook(
+            bodyScale = 1.00f,
+            phase = 1.90,
+            color = Color(0xFFE8C878),
+            litColor = Color(0xFFFFF0C0),
+            shadeColor = Color(0xFF8A6A30),
+            atmosphereColor = Color(0xFFFFE0A0),
+            atmosphereAlpha = 0.22f,
+            specular = 0.40f,
+        ),
+        // Earth — ocean blue with soft atmospheric rim
+        BodyLook(
+            bodyScale = 1.08f,
+            phase = 3.20,
+            color = Color(0xFF3A7AC8),
+            litColor = Color(0xFF7EC8F0),
+            shadeColor = Color(0xFF0A2848),
+            atmosphereColor = Color(0xFF80C8FF),
+            atmosphereAlpha = 0.28f,
+            specular = 0.45f,
+        ),
+        // Mars — rusty desert
+        BodyLook(
+            bodyScale = 0.82f,
+            phase = 4.60,
+            color = Color(0xFFC05A3A),
+            litColor = Color(0xFFE88860),
+            shadeColor = Color(0xFF5A2010),
+            atmosphereColor = Color(0xFFE07050),
+            atmosphereAlpha = 0.10f,
+            specular = 0.22f,
+        ),
+        // Jupiter — banded gas giant
+        BodyLook(
+            bodyScale = 2.15f,
+            phase = 5.80,
+            color = Color(0xFFD4A878),
+            litColor = Color(0xFFF0D0A0),
+            shadeColor = Color(0xFF6A4830),
+            atmosphereColor = Color(0xFFE8C090),
+            atmosphereAlpha = 0.14f,
+            bandCount = 0,
+            specular = 0.28f,
+        ),
+        // Saturn — pale gold + rings
+        BodyLook(
+            bodyScale = 1.85f,
+            phase = 1.10,
+            color = Color(0xFFE0C890),
+            litColor = Color(0xFFF8E8C0),
+            shadeColor = Color(0xFF7A6840),
+            atmosphereColor = Color(0xFFE8D8A8),
+            atmosphereAlpha = 0.12f,
+            hasRing = true,
+            bandCount = 0,
+            specular = 0.32f,
+        ),
+        // Uranus — ice cyan
+        BodyLook(
+            bodyScale = 1.40f,
+            phase = 2.70,
+            color = Color(0xFF7EC8D8),
+            litColor = Color(0xFFB0E8F0),
+            shadeColor = Color(0xFF286070),
+            atmosphereColor = Color(0xFF90D8E8),
+            atmosphereAlpha = 0.16f,
+            specular = 0.38f,
+        ),
+        // Neptune — deep azure
+        BodyLook(
+            bodyScale = 1.32f,
+            phase = 4.90,
+            color = Color(0xFF3A6AD0),
+            litColor = Color(0xFF70A0F0),
+            shadeColor = Color(0xFF102858),
+            atmosphereColor = Color(0xFF5080E0),
+            atmosphereAlpha = 0.18f,
+            specular = 0.42f,
+        ),
     )
 
-    // Compress AU so Neptune reaches ~0.95 of the short-side scale unit.
+    // Compress AU so Neptune reaches ~0.95 of the diagonal orbit unit
+    // (sun → opposite corner), tracking near the card diagonal.
     val compress = 0.42
     val raw = PLANET_AU.map { it.pow(compress) }
     val maxRaw = raw.last()
@@ -179,9 +272,18 @@ internal fun solarSystemPlanets(protein: Color, carbs: Color, fats: Color): List
             orbitB = orbitB,
             angularVel = omega,
             phase = look.phase,
-            color = colors[i],
+            color = look.color,
             bodyScale = look.bodyScale,
             hasRing = look.hasRing,
+            litColor = look.litColor,
+            shadeColor = look.shadeColor,
+            atmosphereColor = look.atmosphereColor,
+            atmosphereAlpha = look.atmosphereAlpha,
+            bandCount = look.bandCount,
+            specular = look.specular,
+            index = i,
+            // Inner worlds spin faster; gas giants a bit slower visually.
+            spinRate = (0.0018f - i * 0.00012f).coerceAtLeast(0.00055f),
         )
     }
 }

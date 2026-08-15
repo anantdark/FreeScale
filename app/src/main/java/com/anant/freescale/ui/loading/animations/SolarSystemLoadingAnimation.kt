@@ -27,15 +27,19 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anant.freescale.ui.loading.LoadingAnimation
@@ -104,16 +108,14 @@ private fun SolarSystemCard(
         }
     }
 
-    val amber = Color(0xFFFFB300)
-    val sunCore = Color(0xFFFFF8E1)
-    val sunHot = Color(0xFFFFE082)
-    val sunPlasma = Color(0xFFFF6D00)
-    val sunLimb = Color(0xFFBF360C)
-    val spaceDeep = Color(0xFF02030A)
-    val spaceMid = Color(0xFF070B16)
-    val planets = remember { solarSystemPlanets(BannerProteinColor, BannerCarbsColor, BannerFatsColor) }
+    val planets = remember { solarSystemPlanets() }
     val firstLine = measuringLabel(modelId)
     val isBoosting = speedMultiplier > 1.05f
+    val sunTexture = rememberSunTexture()
+    val sunSphereCache = rememberSunSphereCache()
+    val sunSpots = rememberSunSpotSeeds()
+    val planetTextures = rememberPlanetTextures()
+    val planetSphereAtlas = rememberPlanetSphereAtlas()
 
     data class Star(
         val x: Float,
@@ -129,20 +131,21 @@ private fun SolarSystemCard(
         val rng = kotlin.random.Random(0xA57A_2024)
         val tints = listOf(
             Color(0xFFFFFFFF),
-            Color(0xFFE3ECFF),
-            Color(0xFFFFF1DD),
-            Color(0xFFC9D7FF),
-            Color(0xFFFFE0C2),
+            Color(0xFFE8EEFF),
+            Color(0xFFFFF4E5),
+            Color(0xFFB8C8FF),
+            Color(0xFFFFE8C8),
+            Color(0xFFFFD0A0),
         )
-        List(160) {
+        List(220) {
             Star(
                 x = rng.nextFloat(),
                 y = rng.nextFloat(),
-                baseAlpha = 0.08f + rng.nextFloat() * 0.65f,
-                freq = 0.0004 + rng.nextDouble() * 0.0028,
+                baseAlpha = 0.04f + rng.nextFloat() * 0.72f,
+                freq = 0.00025 + rng.nextDouble() * 0.0022,
                 phase = rng.nextDouble() * (2.0 * PI),
-                radius = 0.35f + rng.nextFloat() * 1.45f,
-                layer = 0.15f + rng.nextFloat() * 0.85f,
+                radius = 0.28f + rng.nextFloat() * 1.55f,
+                layer = 0.12f + rng.nextFloat() * 0.88f,
                 tint = tints[rng.nextInt(tints.size)],
             )
         }
@@ -160,17 +163,17 @@ private fun SolarSystemCard(
     )
     val shootingStars = remember {
         val rng = kotlin.random.Random(0xB33F_2025)
-        List(5) {
+        List(4) {
             val angle = Math.PI + (-0.35 + rng.nextDouble() * 0.70)
             ShootingStar(
                 startX = 0.15f + rng.nextFloat() * 0.75f,
                 startY = rng.nextFloat() * 0.45f,
                 dx = cos(angle).toFloat(),
                 dy = sin(angle).toFloat() * 0.55f,
-                periodMs = 3800.0 + rng.nextDouble() * 5200.0,
+                periodMs = 4200.0 + rng.nextDouble() * 5600.0,
                 offsetMs = rng.nextDouble() * 8000.0,
-                alpha = 0.40f + rng.nextFloat() * 0.40f,
-                length = 0.08f + rng.nextFloat() * 0.10f,
+                alpha = 0.35f + rng.nextFloat() * 0.35f,
+                length = 0.07f + rng.nextFloat() * 0.09f,
             )
         }
     }
@@ -184,18 +187,38 @@ private fun SolarSystemCard(
             val H = size.height
             val scale = min(W, H)
             val now = scaledTime
-            val pulse = 0.94f + 0.06f * sin(now * 0.0022).toFloat()
+            val pulse = 0.97f + 0.03f * sin(now * 0.0018).toFloat()
             val boost = isBoosting
 
             // Sun sits under the top-right circular progress (card padding ~24dp).
             val sunPos = Offset(W - 42.dp.toPx(), 42.dp.toPx())
-            val sunDiskR = 14.dp.toPx() * pulse
+            val sunDiskR = 20.dp.toPx() * pulse
+            // Size orbits so Neptune (~orbitA 0.95) tracks near the sun→bottom-left diagonal.
+            val orbitScale = hypot(sunPos.x, H - sunPos.y)
 
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(spaceMid, spaceDeep, Color(0xFF010208)),
-                    center = Offset(W * 0.72f, H * 0.18f),
+                    colors = listOf(
+                        Color(0xFF0A0E1A),
+                        Color(0xFF04060E),
+                        Color(0xFF010208),
+                    ),
+                    center = Offset(W * 0.70f, H * 0.16f),
                     radius = hypot(W, H),
+                ),
+            )
+
+            // Faint zodiacal / galactic dust band.
+            drawRect(
+                brush = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        0.42f to Color(0xFF1A1830).copy(alpha = 0.10f),
+                        0.55f to Color(0xFF2A2040).copy(alpha = 0.07f),
+                        1f to Color.Transparent,
+                    ),
+                    start = Offset(0f, H * 0.15f),
+                    end = Offset(W, H * 0.95f),
                 ),
             )
 
@@ -203,23 +226,23 @@ private fun SolarSystemCard(
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            amber.copy(alpha = 0.06f),
+                            Color(0xFFFFB060).copy(alpha = 0.07f),
                             Color.Transparent,
                         ),
                         center = sunPos,
-                        radius = scale * 0.9f,
+                        radius = scale * 0.95f,
                     ),
                 )
             }
 
             stars.forEach { s ->
                 val twinkle = sin(now * s.freq + s.phase).toFloat()
-                val a = (s.baseAlpha + twinkle * s.baseAlpha * 0.70f).coerceIn(0.02f, 1f)
+                val a = (s.baseAlpha + twinkle * s.baseAlpha * 0.55f).coerceIn(0.02f, 1f)
                 val spin = if (boost) (now * 0.00012 * s.layer).toFloat() else 0f
                 val cx = ((s.x + spin) % 1f + 1f) % 1f
                 drawCircle(
                     color = s.tint.copy(alpha = a * if (boost) 0.85f else 1f),
-                    radius = s.radius * if (boost) 1.15f else 1f,
+                    radius = s.radius * if (boost) 1.12f else 1f,
                     center = Offset(cx * W, s.y * H),
                 )
             }
@@ -227,19 +250,19 @@ private fun SolarSystemCard(
             if (!boost) {
                 shootingStars.forEach { ss ->
                     val t = (((now + ss.offsetMs) % ss.periodMs) / ss.periodMs).toFloat()
-                    if (t < 0.12f) {
-                        val u = t / 0.12f
+                    if (t < 0.10f) {
+                        val u = t / 0.10f
                         val travel = ss.length * u
                         val head = Offset(
                             (ss.startX + ss.dx * travel) * W,
                             (ss.startY + ss.dy * travel) * H,
                         )
-                        val tailU = (u - 0.5f).coerceAtLeast(0f)
+                        val tailU = (u - 0.45f).coerceAtLeast(0f)
                         val tail = Offset(
                             (ss.startX + ss.dx * ss.length * tailU) * W,
                             (ss.startY + ss.dy * ss.length * tailU) * H,
                         )
-                        val a = ss.alpha * (1f - abs(u - 0.45f) * 2.2f).coerceIn(0f, 1f)
+                        val a = ss.alpha * (1f - abs(u - 0.40f) * 2.4f).coerceIn(0f, 1f)
                         drawLine(
                             brush = Brush.linearGradient(
                                 colors = listOf(Color.Transparent, Color.White.copy(alpha = a)),
@@ -248,35 +271,35 @@ private fun SolarSystemCard(
                             ),
                             start = tail,
                             end = head,
-                            strokeWidth = 1.2.dp.toPx(),
+                            strokeWidth = 1.1.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
                 }
             }
 
-            // Soft solar bloom across the card — reads as atmosphere, not a bar.
+            // Soft solar illumination wash across the card.
             drawCircle(
                 brush = Brush.radialGradient(
                     colorStops = arrayOf(
-                        0f to amber.copy(alpha = 0.16f * pulse),
-                        0.35f to amber.copy(alpha = 0.06f),
+                        0f to Color(0xFFFFC070).copy(alpha = 0.12f * pulse),
+                        0.28f to Color(0xFFFF8A40).copy(alpha = 0.05f),
                         1f to Color.Transparent,
                     ),
                     center = sunPos,
-                    radius = scale * 0.72f,
+                    radius = scale * 0.78f,
                 ),
-                radius = scale * 0.72f,
+                radius = scale * 0.78f,
                 center = sunPos,
                 blendMode = BlendMode.Plus,
             )
 
             planets.forEach { spec ->
-                drawTopDownOrbit(sunPos, spec, scale, fade = if (boost) 0.45f else 1f)
+                drawTopDownOrbit(sunPos, spec, orbitScale, fade = if (boost) 0.40f else 1f)
             }
 
             val states = planets.map { spec ->
-                spec to orbitalPoint(spec, now, sunPos.x, sunPos.y, scale)
+                spec to orbitalPoint(spec, now, sunPos.x, sunPos.y, orbitScale)
             }
             val (backPlanets, frontPlanets) = orderByDepth(states)
 
@@ -292,7 +315,7 @@ private fun SolarSystemCard(
                         spec = spec,
                         now = now,
                         sunPos = sunPos,
-                        scale = scale,
+                        scale = orbitScale,
                         steps = arcSteps,
                         stepMs = stepMs,
                         depthZ = hz,
@@ -304,16 +327,26 @@ private fun SolarSystemCard(
                 drawLitPlanet(
                     center = Offset(hx, hy),
                     sunPos = sunPos,
-                    color = spec.color,
+                    spec = spec,
                     scale = depthScale(hz) * spec.bodyScale,
-                    alpha = depthAlpha(hz) * if (transiting) 0.80f else 1f,
+                    alpha = depthAlpha(hz) * if (transiting) 0.78f else 1f,
                     transit = transiting,
-                    hasRing = spec.hasRing,
+                    timeMs = now,
+                    textures = planetTextures,
+                    atlas = planetSphereAtlas,
                 )
             }
 
             backPlanets.forEach { (spec, pos) -> drawPlanet(spec, pos) }
-            drawSun(sunPos, amber, sunHot, sunCore, sunPlasma, sunLimb, pulse, now, sunDiskR)
+            drawSunSprite(
+                center = sunPos,
+                diskR = sunDiskR,
+                timeMs = now,
+                pulse = pulse,
+                texture = sunTexture,
+                cache = sunSphereCache,
+                spots = sunSpots,
+            )
             frontPlanets.forEach { (spec, pos) -> drawPlanet(spec, pos) }
 
             // Readability veil: keep weight / ticks legible over orbit traffic.
@@ -331,7 +364,7 @@ private fun SolarSystemCard(
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
-                        0f to Color.Black.copy(alpha = 0.18f),
+                        0f to Color.Black.copy(alpha = 0.16f),
                         0.22f to Color.Transparent,
                         0.72f to Color.Transparent,
                         1f to Color.Black.copy(alpha = 0.55f),
@@ -388,7 +421,7 @@ private fun DrawScope.drawTopDownOrbit(
     val a = spec.orbitA * scale
     val b = spec.orbitB * scale
     val path = Path()
-    val samples = 80
+    val samples = 96
     for (i in 0..samples) {
         val th = (i.toDouble() / samples) * 2.0 * PI
         val cosT = cos(th).toFloat()
@@ -402,8 +435,8 @@ private fun DrawScope.drawTopDownOrbit(
 
     drawPath(
         path = path,
-        color = spec.color.copy(alpha = 0.07f * fade),
-        style = Stroke(width = 0.85.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+        color = Color.White.copy(alpha = 0.045f * fade),
+        style = Stroke(width = 0.7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
     )
 }
 
@@ -426,208 +459,187 @@ private fun DrawScope.drawOrbitArc(
     val (hx, hy, _) = orbitalPoint(spec, now, sunPos.x, sunPos.y, scale)
     pts.add(Offset(hx, hy))
 
-    val baseW = 2.2.dp.toPx() * depthScale(depthZ) * spec.bodyScale.coerceAtMost(1.3f)
+    val baseW = 1.6.dp.toPx() * depthScale(depthZ) * spec.bodyScale.coerceAtMost(1.3f)
     for (i in 0 until pts.size - 1) {
         val frac = (i + 1).toFloat() / pts.size
-        val a = frac * 0.42f * depthAlpha(depthZ) * fade
+        val a = frac * 0.28f * depthAlpha(depthZ) * fade
         drawLine(
             color = spec.color.copy(alpha = a),
             start = pts[i],
             end = pts[i + 1],
-            strokeWidth = (baseW * frac).coerceAtLeast(0.7.dp.toPx()),
+            strokeWidth = (baseW * frac).coerceAtLeast(0.55.dp.toPx()),
             cap = StrokeCap.Round,
             blendMode = BlendMode.Plus,
         )
     }
-}
-
-private fun DrawScope.drawSun(
-    sunPos: Offset,
-    amber: Color,
-    sunHot: Color,
-    sunCore: Color,
-    sunPlasma: Color,
-    sunLimb: Color,
-    pulse: Float,
-    now: Double,
-    diskR: Float,
-) {
-    val f = pulse
-
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(amber.copy(alpha = 0.22f * f), Color.Transparent),
-            center = sunPos,
-            radius = diskR * 4.8f,
-        ),
-        radius = diskR * 4.8f,
-        center = sunPos,
-        blendMode = BlendMode.Plus,
-    )
-
-    val rayCount = 16
-    for (i in 0 until rayCount) {
-        val baseAng = (i * (2.0 * PI) / rayCount) + now * 0.00032
-        val flutter = 0.50f + 0.50f * sin(now * 0.0025 + i * 1.4).toFloat()
-        val len = diskR * (1.6f + 2.4f * flutter)
-        val dx = cos(baseAng).toFloat()
-        val dy = sin(baseAng).toFloat()
-        val tip = Offset(sunPos.x + dx * len, sunPos.y + dy * len)
-        val root = Offset(sunPos.x + dx * diskR * 0.88f, sunPos.y + dy * diskR * 0.88f)
-        drawLine(
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    sunPlasma.copy(alpha = 0.42f * flutter * f),
-                    amber.copy(alpha = 0.14f * f),
-                    Color.Transparent,
-                ),
-                start = root,
-                end = tip,
-            ),
-            start = root,
-            end = tip,
-            strokeWidth = (1.8.dp.toPx() * flutter).coerceAtLeast(0.7.dp.toPx()),
-            cap = StrokeCap.Round,
-            blendMode = BlendMode.Plus,
-        )
-    }
-
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(
-                sunHot.copy(alpha = 0.55f * f),
-                sunPlasma.copy(alpha = 0.24f * f),
-                Color.Transparent,
-            ),
-            center = sunPos,
-            radius = diskR * 1.85f,
-        ),
-        radius = diskR * 1.85f,
-        center = sunPos,
-        blendMode = BlendMode.Plus,
-    )
-
-    drawCircle(
-        brush = Brush.radialGradient(
-            colorStops = arrayOf(
-                0.0f to sunCore.copy(alpha = f),
-                0.35f to sunHot.copy(alpha = f),
-                0.72f to amber.copy(alpha = f),
-                1.0f to sunLimb.copy(alpha = 0.92f * f),
-            ),
-            center = Offset(sunPos.x - diskR * 0.08f, sunPos.y - diskR * 0.10f),
-            radius = diskR * 1.08f,
-        ),
-        radius = diskR,
-        center = sunPos,
-    )
-
-    for (i in 0 until 8) {
-        val ang = i * 0.95 + now * 0.0007
-        val r = diskR * (0.18f + 0.22f * ((i * 37) % 5) / 5f)
-        val c = Offset(
-            sunPos.x + cos(ang).toFloat() * r * 0.55f,
-            sunPos.y + sin(ang).toFloat() * r * 0.50f,
-        )
-        drawCircle(
-            color = sunCore.copy(alpha = 0.12f * f),
-            radius = diskR * (0.12f + 0.04f * (i % 3)),
-            center = c,
-            blendMode = BlendMode.Plus,
-        )
-    }
-
-    drawCircle(
-        color = Color.White.copy(alpha = 0.70f * f),
-        radius = diskR * 0.24f,
-        center = Offset(sunPos.x - diskR * 0.12f, sunPos.y - diskR * 0.10f),
-        blendMode = BlendMode.Plus,
-    )
 }
 
 private fun DrawScope.drawLitPlanet(
     center: Offset,
     sunPos: Offset,
-    color: Color,
+    spec: PlanetSpec,
     scale: Float,
     alpha: Float,
     transit: Boolean,
-    hasRing: Boolean,
+    timeMs: Double,
+    textures: List<ImageBitmap>,
+    atlas: PlanetSphereAtlas,
 ) {
-    val bodyR = 4.2.dp.toPx() * scale
+    val bodyR = 5.6.dp.toPx() * scale
     val dx = sunPos.x - center.x
     val dy = sunPos.y - center.y
     val dist = hypot(dx, dy).coerceAtLeast(0.001f)
     val nx = dx / dist
     val ny = dy / dist
+    val color = spec.color
 
-    if (hasRing) {
-        val ringAngle = Math.toDegrees(atan2(ny.toDouble(), nx.toDouble())).toFloat()
-        rotate(degrees = ringAngle * 0.15f, pivot = center) {
-            drawOval(
-                color = color.copy(alpha = 0.30f * alpha),
-                topLeft = Offset(center.x - bodyR * 2.2f, center.y - bodyR * 0.45f),
-                size = Size(bodyR * 4.4f, bodyR * 0.9f),
-                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round),
-            )
-        }
+    if (spec.hasRing) {
+        drawSaturnRing(center, bodyR, color, alpha, front = false, nx, ny)
     }
 
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(color.copy(alpha = 0.30f * alpha), Color.Transparent),
+    if (spec.atmosphereAlpha > 0f) {
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    spec.atmosphereColor.copy(alpha = spec.atmosphereAlpha * alpha * 0.85f),
+                    Color.Transparent,
+                ),
+                center = center,
+                radius = bodyR * 2.0f,
+            ),
+            radius = bodyR * 2.0f,
             center = center,
-            radius = bodyR * 2.4f,
-        ),
-        radius = bodyR * 2.4f,
-        center = center,
-        blendMode = BlendMode.Plus,
-    )
+            blendMode = BlendMode.Plus,
+        )
+    }
 
     if (transit) {
         drawCircle(
-            color = Color.Black.copy(alpha = 0.55f * alpha),
+            color = Color.Black.copy(alpha = 0.58f * alpha),
             radius = bodyR,
             center = center,
         )
     }
 
-    drawCircle(
-        color = color.copy(alpha = 0.18f * alpha),
-        radius = bodyR,
-        center = center,
-    )
+    val tex = textures.getOrNull(spec.index)
+    if (tex != null && alpha > 0.02f) {
+        val spin = (timeMs * spec.spinRate + spec.phase).toFloat()
+        val sphere = atlas.image(
+            index = spec.index,
+            texture = tex,
+            radiusPx = bodyR,
+            rotationRad = spin,
+            lightX = nx,
+            lightY = ny,
+        )
+        val size = (bodyR * 2f).toInt().coerceAtLeast(1)
+        // Soft alpha via overlay darkening when depth-faded.
+        if (alpha >= 0.98f) {
+            drawImage(
+                image = sphere,
+                dstOffset = IntOffset((center.x - bodyR).toInt(), (center.y - bodyR).toInt()),
+                dstSize = IntSize(size, size),
+            )
+        } else {
+            drawImage(
+                image = sphere,
+                dstOffset = IntOffset((center.x - bodyR).toInt(), (center.y - bodyR).toInt()),
+                dstSize = IntSize(size, size),
+                alpha = alpha,
+            )
+        }
+    } else {
+        // Fallback flat shading if a texture failed to load.
+        drawCircle(color = spec.shadeColor.copy(alpha = 0.95f * alpha), radius = bodyR, center = center)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    spec.litColor.copy(alpha = 0.95f * alpha),
+                    color.copy(alpha = 0.5f * alpha),
+                    Color.Transparent,
+                ),
+                center = Offset(center.x + nx * bodyR * 0.35f, center.y + ny * bodyR * 0.35f),
+                radius = bodyR * 1.4f,
+            ),
+            radius = bodyR,
+            center = center,
+        )
+    }
 
-    val litCenter = Offset(center.x + nx * bodyR * 0.42f, center.y + ny * bodyR * 0.42f)
+    // Soft specular kiss on the day side.
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.48f * alpha),
-                color.copy(alpha = 0.96f * alpha),
-                color.copy(alpha = 0.08f * alpha),
+                Color.White.copy(alpha = 0.18f * alpha * spec.specular),
+                Color.Transparent,
             ),
-            center = litCenter,
-            radius = bodyR * 1.55f,
+            center = Offset(center.x + nx * bodyR * 0.28f, center.y + ny * bodyR * 0.28f),
+            radius = bodyR * 0.40f,
         ),
-        radius = bodyR,
-        center = center,
-    )
-
-    val darkCenter = Offset(center.x - nx * bodyR * 0.58f, center.y - ny * bodyR * 0.58f)
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(Color.Black.copy(alpha = 0.48f * alpha), Color.Transparent),
-            center = darkCenter,
-            radius = bodyR * 1.15f,
-        ),
-        radius = bodyR * 1.15f,
-        center = darkCenter,
-    )
-
-    drawCircle(
-        color = Color.White.copy(alpha = 0.58f * alpha),
-        radius = bodyR * 0.22f,
-        center = Offset(center.x + nx * bodyR * 0.30f, center.y + ny * bodyR * 0.30f),
+        radius = bodyR * 0.40f,
+        center = Offset(center.x + nx * bodyR * 0.28f, center.y + ny * bodyR * 0.28f),
         blendMode = BlendMode.Plus,
     )
+
+    if (spec.hasRing) {
+        drawSaturnRing(center, bodyR, color, alpha, front = true, nx, ny)
+    }
+}
+
+private fun DrawScope.drawSaturnRing(
+    center: Offset,
+    bodyR: Float,
+    color: Color,
+    alpha: Float,
+    front: Boolean,
+    nx: Float,
+    ny: Float,
+) {
+    val ringAngle = Math.toDegrees(atan2(ny.toDouble(), nx.toDouble())).toFloat() * 0.12f
+    val rx = bodyR * 2.35f
+    val ry = bodyR * 0.48f
+    rotate(degrees = ringAngle, pivot = center) {
+        val topLeft = Offset(center.x - rx, center.y - ry)
+        val size = Size(rx * 2f, ry * 2f)
+        if (front) {
+            // Front arc: clip to lower half of ring ellipse.
+            val clip = Path().apply {
+                moveTo(center.x - rx * 1.1f, center.y)
+                lineTo(center.x + rx * 1.1f, center.y)
+                lineTo(center.x + rx * 1.1f, center.y + ry * 1.4f)
+                lineTo(center.x - rx * 1.1f, center.y + ry * 1.4f)
+                close()
+            }
+            clipPath(clip) {
+                drawOval(
+                    color = Color(0xFFE8DCC0).copy(alpha = 0.42f * alpha),
+                    topLeft = topLeft,
+                    size = size,
+                    style = Stroke(width = 1.35.dp.toPx(), cap = StrokeCap.Round),
+                )
+                drawOval(
+                    color = color.copy(alpha = 0.18f * alpha),
+                    topLeft = Offset(center.x - rx * 0.88f, center.y - ry * 0.72f),
+                    size = Size(rx * 1.76f, ry * 1.44f),
+                    style = Stroke(width = 0.7.dp.toPx()),
+                )
+            }
+        } else {
+            val clip = Path().apply {
+                moveTo(center.x - rx * 1.1f, center.y)
+                lineTo(center.x + rx * 1.1f, center.y)
+                lineTo(center.x + rx * 1.1f, center.y - ry * 1.4f)
+                lineTo(center.x - rx * 1.1f, center.y - ry * 1.4f)
+                close()
+            }
+            clipPath(clip) {
+                drawOval(
+                    color = Color(0xFFC8B890).copy(alpha = 0.28f * alpha),
+                    topLeft = topLeft,
+                    size = size,
+                    style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+        }
+    }
 }

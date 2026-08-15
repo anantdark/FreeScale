@@ -1,0 +1,21 @@
+Celestial body textures for the solar-system loading animation.
+
+Source: Solar System Scope texture library
+  https://www.solarsystemscope.com/textures/
+
+Bundled (resized/compressed for APK size):
+  - res/raw/solar_sun_texture.jpg     ← 2k_sun.jpg
+  - res/raw/solar_mercury.jpg         ← 2k_mercury.jpg
+  - res/raw/solar_venus.jpg           ← 2k_venus_atmosphere.jpg
+  - res/raw/solar_earth.jpg           ← 2k_earth_daymap.jpg
+  - res/raw/solar_mars.jpg            ← 2k_mars.jpg
+  - res/raw/solar_jupiter.jpg         ← 2k_jupiter.jpg
+  - res/raw/solar_saturn.jpg          ← 2k_saturn.jpg
+  - res/raw/solar_uranus.jpg          ← 2k_uranus.jpg
+  - res/raw/solar_neptune.jpg         ← 2k_neptune.jpg
+
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+
+Based on NASA imagery data (Solar System Scope derivatives with enhanced
+saturation / filled gaps). Attribution required when redistributing.
