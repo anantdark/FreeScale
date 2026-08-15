@@ -1,0 +1,51 @@
+package com.anant.freescale.ui.loading
+
+import com.anant.freescale.ui.loading.animations.DnaHelixHorizontalLoadingAnimation
+import com.anant.freescale.ui.loading.animations.DnaHelixLoadingAnimation
+import com.anant.freescale.ui.loading.animations.SolarSystemLoadingAnimation
+import com.anant.freescale.ui.loading.animations.TirangaLoadingAnimation
+import kotlin.random.Random
+
+/**
+ * Static catalogue of reading-card wait animations. Add a new animation by
+ * implementing [LoadingAnimation] and appending it to [all].
+ */
+object LoadingAnimationRegistry {
+    val all: List<LoadingAnimation> = listOf(
+        SolarSystemLoadingAnimation,
+        TirangaLoadingAnimation,
+        DnaHelixLoadingAnimation,
+        DnaHelixHorizontalLoadingAnimation,
+    )
+
+    fun forSlot(slot: LoadingAnimationSlot): List<LoadingAnimation> =
+        all.filter { slot in it.slots }
+
+    fun byId(id: String): LoadingAnimation? =
+        all.firstOrNull { it.id == id }
+
+    fun random(slot: LoadingAnimationSlot, rng: Random = Random.Default): LoadingAnimation {
+        val eligible = forSlot(slot)
+        require(eligible.isNotEmpty()) { "No loading animations registered for $slot" }
+        return eligible[rng.nextInt(eligible.size)]
+    }
+
+    /**
+     * Resolves [choice] for [slot].
+     * - [LoadingAnimChoice.OFF] → null (caller shows spinner)
+     * - [LoadingAnimChoice.RANDOM] → random eligible animation
+     * - animation id → that animation if it supports [slot], else random for the slot
+     */
+    fun resolve(
+        slot: LoadingAnimationSlot,
+        choice: String,
+        rng: Random = Random.Default,
+    ): LoadingAnimation? {
+        when (choice) {
+            LoadingAnimChoice.OFF -> return null
+            LoadingAnimChoice.RANDOM, "" -> return random(slot, rng)
+        }
+        val fixed = byId(choice)
+        return if (fixed != null && slot in fixed.slots) fixed else random(slot, rng)
+    }
+}

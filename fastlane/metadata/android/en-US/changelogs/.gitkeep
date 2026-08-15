@@ -1,0 +1,3 @@
+# Placeholder for F-Droid / Play store listing metadata.
+# Changelogs are written here by .github/workflows/fdroid-release.yml
+# as fastlane/metadata/android/en-US/changelogs/<versionCode>.txt

@@ -1,0 +1,53 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local configuration (SDK path, secrets)
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Kotlin
+.kotlin/
+
+# Captures / profiling
+captures/
+*.hprof
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor local files
+.cursor/
+
+# Backup / swap
+*~
+*.swp
+*.bak
+
+# NDK / native
+.externalNativeBuild/
+.cxx/
+
+# Generated
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+.signing-secrets/
