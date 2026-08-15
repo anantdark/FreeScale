@@ -121,6 +121,8 @@ fun FreeScaleApp(vm: MeasureViewModel) {
                 }
                 composable(FreeScaleDestination.Settings.route) {
                     val backupState by vm.backupState.collectAsStateWithLifecycle()
+                    val fitBuddyState by vm.fitBuddyState.collectAsStateWithLifecycle()
+                    val shareToFitBuddy by vm.shareToFitBuddy.collectAsStateWithLifecycle()
                     SettingsScreen(
                         heightCm = state.heightCm,
                         ageYears = state.ageYears,
@@ -153,6 +155,12 @@ fun FreeScaleApp(vm: MeasureViewModel) {
                         onExportBackup = vm::exportBackup,
                         onImportBackup = vm::importBackup,
                         onDismissBackupMessage = vm::dismissBackupMessage,
+                        shareToFitBuddy = shareToFitBuddy,
+                        onShareToFitBuddyChange = vm::setShareToFitBuddy,
+                        fitBuddyState = fitBuddyState,
+                        onRestoreFromFitBuddy = vm::restoreFromFitBuddy,
+                        onDismissFitBuddyMessage = vm::dismissFitBuddyMessage,
+                        onRefreshFitBuddyAvailability = vm::refreshFitBuddyAvailability,
                     )
                 }
             }

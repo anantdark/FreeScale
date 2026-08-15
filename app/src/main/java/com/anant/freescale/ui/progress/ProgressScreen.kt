@@ -21,6 +21,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,10 +40,15 @@ fun ProgressScreen(vm: MeasureViewModel) {
     val history by vm.measurementHistory.collectAsStateWithLifecycle()
     val count by vm.measurementCount.collectAsStateWithLifecycle()
     val debugMode by vm.debugMode.collectAsStateWithLifecycle()
+    val fitBuddyState by vm.fitBuddyState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        vm.refreshFitBuddyAvailability()
+    }
 
     val period = progress.period
     val series = remember(periodReadings, progress.metric, period.start, period.endExclusive) {
-        val points = buildDailySeries(periodReadings, progress.metric)
+        val points = buildReadingSeries(periodReadings, progress.metric)
         buildChartSeries(points, progress.metric)
     }
 
@@ -157,7 +163,20 @@ fun ProgressScreen(vm: MeasureViewModel) {
         MeasurementDetailSheet(
             measurement = m,
             debugMode = debugMode,
-            onDismiss = { selected = null },
+            onDismiss = {
+                vm.dismissFitBuddyMessage()
+                selected = null
+            },
+            shareEnabled = fitBuddyState.available,
+            shareBusy = fitBuddyState.busy,
+            shareMessage = fitBuddyState.message,
+            shareMessageIsError = fitBuddyState.isError,
+            onShareToFitBuddy = {
+                vm.refreshFitBuddyAvailability()
+                vm.shareToFitBuddy(m)
+            },
+            onDismissShareMessage = vm::dismissFitBuddyMessage,
+            onFitBuddyAvailabilityChanged = vm::setFitBuddyAvailable,
         )
     }
 }

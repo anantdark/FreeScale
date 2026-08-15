@@ -18,6 +18,14 @@
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
+    <!-- Package visibility for FitBuddy measurement bridge (ContentProvider call). -->
+    <queries>
+        <package android:name="com.anant.fitbuddy" />
+        <package android:name="com.anant.fitbuddy.debug" />
+        <provider android:authorities="com.anant.fitbuddy.bridge.measurements" />
+        <provider android:authorities="com.anant.fitbuddy.debug.bridge.measurements" />
+    </queries>
+
     <application
         android:name=".FreeScaleApp"
         android:allowBackup="true"
@@ -46,5 +54,19 @@
         <receiver
             android:name=".crash.HeartbeatReceiver"
             android:exported="false" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <provider
+            android:name=".bridge.MeasurementBridgeProvider"
+            android:authorities="${applicationId}.bridge.measurements"
+            android:exported="true"
+            android:grantUriPermissions="false" />
     </application>
 </manifest>

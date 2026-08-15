@@ -86,6 +86,7 @@ import com.anant.freescale.UiState
 import com.anant.freescale.ble.ScannedScale
 import com.anant.freescale.data.MeasurePhase
 import com.anant.freescale.ui.MeasurementDetail
+import com.anant.freescale.ui.previousMeasurement
 import com.anant.freescale.ui.loading.LoadingAnimChoice
 import com.anant.freescale.ui.loading.LoadingAnimationHost
 import com.anant.freescale.ui.loading.LoadingAnimationRegistry
@@ -138,6 +139,7 @@ fun HomeScreen(
 ) {
     val state by vm.ui.collectAsStateWithLifecycle()
     val autoConnect by vm.autoConnect.collectAsStateWithLifecycle()
+    val history by vm.measurementHistory.collectAsStateWithLifecycle()
     val log by BleLogger.lines.collectAsStateWithLifecycle()
     val scheme = MaterialTheme.colorScheme
     val motion = MaterialTheme.motionScheme
@@ -329,14 +331,6 @@ fun HomeScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = displayMeasurement != null,
-            enter = detailEnter,
-            exit = detailExit,
-        ) {
-            displayMeasurement?.let { MeasurementDetail(it, debugMode) }
-        }
-
         val connectedDevice = state.connectedDevice
         if (state.connected && connectedDevice != null) {
             HorizontalDivider()
@@ -349,6 +343,20 @@ fun HomeScreen(
                     state.measurePhase == MeasurePhase.MeasuringBia,
                 reduceAnimations = reduceAnimations,
             )
+        }
+
+        AnimatedVisibility(
+            visible = displayMeasurement != null,
+            enter = detailEnter,
+            exit = detailExit,
+        ) {
+            displayMeasurement?.let { current ->
+                MeasurementDetail(
+                    m = current,
+                    debugMode = debugMode,
+                    previous = previousMeasurement(current, history),
+                )
+            }
         }
 
         if (debugMode) {

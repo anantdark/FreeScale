@@ -83,7 +83,8 @@ object MeasurementBackupJson {
         )
     }
 
-    private fun encodeMeasurement(m: ScaleMeasurement): JSONObject {
+    /** Single FreeScale reading as portable JSON (also used inside FitBuddy bridge payload). */
+    fun encodeMeasurement(m: ScaleMeasurement): JSONObject {
         val at = m.dateTime?.time ?: 0L
         return JSONObject()
             .put("recordedAtEpochMs", at)
@@ -126,7 +127,7 @@ object MeasurementBackupJson {
             .put("pkt2Hex", m.pkt2Hex)
     }
 
-    private fun decodeMeasurement(o: JSONObject): ScaleMeasurement {
+    fun decodeMeasurement(o: JSONObject): ScaleMeasurement {
         val at = o.optLong("recordedAtEpochMs", 0L)
         return ScaleMeasurement(
             userId = o.optInt("userId", 1),

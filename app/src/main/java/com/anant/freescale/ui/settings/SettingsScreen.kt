@@ -85,6 +85,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.anant.freescale.BackupImportMode
 import com.anant.freescale.BackupUiState
 import com.anant.freescale.BuildConfig
+import com.anant.freescale.FitBuddyUiState
 import com.anant.freescale.R
 import com.anant.freescale.UpdateUiState
 import com.anant.freescale.data.remote.UpdateCheckResult
@@ -97,7 +98,6 @@ import com.anant.freescale.ui.loading.LoadingAnimationSlot
 import com.anant.freescale.ui.loading.LoadingHoldBoostMultiplier
 import com.anant.freescale.ui.loading.loadingHoldToBoost
 import kotlinx.coroutines.delay
-import java.time.LocalDate
 import android.net.Uri
 
 private const val DEVELOPER_UNLOCK_TAPS = 31
@@ -133,9 +133,15 @@ fun SettingsScreen(
     onForceShowLoadingAnimationsChange: (Boolean) -> Unit = {},
     onHeartDoubleTapHeartbeat: () -> Unit = {},
     backupState: BackupUiState = BackupUiState(),
-    onExportBackup: (Uri) -> Unit = {},
+    onExportBackup: () -> Unit = {},
     onImportBackup: (Uri, BackupImportMode) -> Unit = { _, _ -> },
     onDismissBackupMessage: () -> Unit = {},
+    shareToFitBuddy: Boolean = false,
+    onShareToFitBuddyChange: (Boolean) -> Unit = {},
+    fitBuddyState: FitBuddyUiState = FitBuddyUiState(),
+    onRestoreFromFitBuddy: (BackupImportMode) -> Unit = {},
+    onDismissFitBuddyMessage: () -> Unit = {},
+    onRefreshFitBuddyAvailability: () -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
     var packageTapCount by remember { mutableIntStateOf(0) }
@@ -146,12 +152,13 @@ fun SettingsScreen(
     var showImportChooser by remember { mutableStateOf(false) }
     var showReplaceConfirm by remember { mutableStateOf(false) }
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var showFitBuddyRestoreChooser by remember { mutableStateOf(false) }
+    var showFitBuddyReplaceConfirm by remember { mutableStateOf(false) }
 
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json"),
-    ) { uri ->
-        if (uri != null) onExportBackup(uri)
+    LaunchedEffect(Unit) {
+        onRefreshFitBuddyAvailability()
     }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -261,14 +268,11 @@ fun SettingsScreen(
 
         SettingsSection(
             title = "Backup",
-            description = "Export or restore readings and profile as a JSON file on this device.",
+            description = "Share a JSON backup, or restore readings and profile from a file.",
             initiallyExpanded = false,
         ) {
             OutlinedButton(
-                onClick = {
-                    val name = "FreeScale-backup-${LocalDate.now()}.json"
-                    exportLauncher.launch(name)
-                },
+                onClick = onExportBackup,
                 enabled = !backupState.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -282,7 +286,7 @@ fun SettingsScreen(
                 } else {
                     Icon(Icons.Filled.FileUpload, contentDescription = null)
                     Spacer(modifier = Modifier.size(8.dp))
-                    Text("Export JSON backup")
+                    Text("Share JSON backup")
                 }
             }
             OutlinedButton(
@@ -306,6 +310,65 @@ fun SettingsScreen(
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     modifier = Modifier.clickable(onClick = onDismissBackupMessage),
+                )
+            }
+        }
+
+        SettingsSection(
+            title = "FitBuddy",
+            description = "Share body-comp readings to FitBuddy, or rebuild FreeScale " +
+                "history from overlapping fields stored there.",
+            initiallyExpanded = false,
+        ) {
+            if (!fitBuddyState.available) {
+                Text(
+                    "FitBuddy is not installed (or the bridge is unavailable).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = onRefreshFitBuddyAvailability,
+                    enabled = !fitBuddyState.busy,
+                ) {
+                    Text("Check again")
+                }
+            }
+            SettingsToggleRow(
+                title = "Auto-share after weigh-in",
+                subtitle = "After a body-comp save, push to FitBuddy once per day. " +
+                    "Weight-only readings are never auto-shared.",
+                checked = shareToFitBuddy,
+                onCheckedChange = onShareToFitBuddyChange,
+                enabled = fitBuddyState.available && !fitBuddyState.busy,
+            )
+            OutlinedButton(
+                onClick = { showFitBuddyRestoreChooser = true },
+                enabled = fitBuddyState.available && !fitBuddyState.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (fitBuddyState.busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("Working…")
+                } else {
+                    Icon(Icons.Filled.FileDownload, contentDescription = null)
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("Restore from FitBuddy")
+                }
+            }
+            fitBuddyState.message?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (fitBuddyState.isError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.clickable(onClick = onDismissFitBuddyMessage),
                 )
             }
         }
@@ -641,6 +704,73 @@ fun SettingsScreen(
             },
         )
     }
+
+    if (showFitBuddyRestoreChooser) {
+        AlertDialog(
+            onDismissRequest = { showFitBuddyRestoreChooser = false },
+            title = { Text("Restore from FitBuddy") },
+            text = {
+                Text(
+                    "Merge keeps your current readings and adds only new timestamps. " +
+                        "Replace deletes all local readings first, then loads FitBuddy data " +
+                        "(full FreeScale dump when present, otherwise body-comp fields only).",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showFitBuddyRestoreChooser = false
+                        onRestoreFromFitBuddy(BackupImportMode.Merge)
+                    },
+                ) {
+                    Text("Merge")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            showFitBuddyRestoreChooser = false
+                            showFitBuddyReplaceConfirm = true
+                        },
+                    ) {
+                        Text("Replace…")
+                    }
+                    TextButton(onClick = { showFitBuddyRestoreChooser = false }) {
+                        Text("Cancel")
+                    }
+                }
+            },
+        )
+    }
+
+    if (showFitBuddyReplaceConfirm) {
+        AlertDialog(
+            onDismissRequest = { showFitBuddyReplaceConfirm = false },
+            title = { Text("Replace all readings?") },
+            text = {
+                Text(
+                    "This permanently deletes every reading on this phone, then imports " +
+                        "overlapping body-comp fields from FitBuddy. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showFitBuddyReplaceConfirm = false
+                        onRestoreFromFitBuddy(BackupImportMode.Replace)
+                    },
+                ) {
+                    Text("Replace")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFitBuddyReplaceConfirm = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -728,6 +858,7 @@ private fun SettingsToggleRow(
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -745,6 +876,7 @@ private fun SettingsToggleRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
         )
     }
 }

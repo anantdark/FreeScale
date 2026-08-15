@@ -96,6 +96,7 @@ data class ProgressPeriod(
 }
 
 data class ChartPoint(
+    val epochMs: Long,
     val day: LocalDate,
     val value: Float,
     val measurement: ScaleMeasurement,
@@ -117,7 +118,8 @@ data class ChartSeries(
 )
 
 fun ProgressMetric.extract(m: ScaleMeasurement): Float? {
-    if (this != ProgressMetric.Weight && !m.hasBodyComp) return null
+    // Weight chart matches body-comp charts: skip weight-only readings.
+    if (!m.hasBodyComp) return null
     val v = when (this) {
         ProgressMetric.Weight -> m.weight
         ProgressMetric.BodyFat -> m.fat
@@ -125,31 +127,25 @@ fun ProgressMetric.extract(m: ScaleMeasurement): Float? {
         ProgressMetric.SubcutaneousFat -> m.subcutaneousFat
         ProgressMetric.Muscle -> m.muscle
     }
-    if (v <= 0f && this != ProgressMetric.Weight) return null
-    if (this == ProgressMetric.Weight && v <= 0f) return null
+    if (v <= 0f) return null
     return v
 }
 
 /**
- * One point per calendar day = latest reading that day.
- * Body-comp metrics skip weight-only days.
+ * One chart point per reading (not collapsed by day).
+ * Skips weight-only readings for every metric, including Weight.
  */
-fun buildDailySeries(
+fun buildReadingSeries(
     readings: List<ScaleMeasurement>,
     metric: ProgressMetric,
     zone: ZoneId = ZoneId.systemDefault(),
 ): List<ChartPoint> {
-    val byDay = linkedMapOf<LocalDate, ScaleMeasurement>()
-    // readings may be ASC or DESC; keep latest per day
-    readings.sortedBy { it.dateTime?.time ?: 0L }.forEach { m ->
-        val epoch = m.dateTime?.time ?: return@forEach
-        val day = Instant.ofEpochMilli(epoch).atZone(zone).toLocalDate()
-        byDay[day] = m
-    }
-    return byDay.mapNotNull { (day, m) ->
+    return readings.mapNotNull { m ->
+        val epoch = m.dateTime?.time ?: return@mapNotNull null
         val value = metric.extract(m) ?: return@mapNotNull null
-        ChartPoint(day = day, value = value, measurement = m)
-    }.sortedBy { it.day }
+        val day = Instant.ofEpochMilli(epoch).atZone(zone).toLocalDate()
+        ChartPoint(epochMs = epoch, day = day, value = value, measurement = m)
+    }.sortedBy { it.epochMs }
 }
 
 fun buildChartSeries(points: List<ChartPoint>, metric: ProgressMetric): ChartSeries {

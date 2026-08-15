@@ -5,12 +5,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowDropUp
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -20,8 +26,15 @@ import com.anant.freescale.ui.theme.PlexMonoFamily
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+private val TrendGreen = Color(0xFF22C55E)
+private val TrendRed = Color(0xFFEF4444)
+
 @Composable
-fun MeasurementDetail(m: ScaleMeasurement, debugMode: Boolean) {
+fun MeasurementDetail(
+    m: ScaleMeasurement,
+    debugMode: Boolean,
+    previous: ScaleMeasurement? = null,
+) {
     val whenStr = m.dateTime?.let {
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(it)
     } ?: "-"
@@ -44,7 +57,13 @@ fun MeasurementDetail(m: ScaleMeasurement, debugMode: Boolean) {
         }
 
         SectionTitle("Weight & BMI")
-        MetricRow("Weight", fmtKg(m.weight))
+        MetricRow(
+            "Weight",
+            fmtKg(m.weight),
+            change = previous?.let {
+                metricChange(m.weight, it.weight, MetricHigherIs.Worse)
+            },
+        )
         if (!m.hasBodyComp) {
             Text(
                 "(weight only, no BIA this session)",
@@ -53,27 +72,111 @@ fun MeasurementDetail(m: ScaleMeasurement, debugMode: Boolean) {
                 modifier = Modifier.padding(bottom = 4.dp),
             )
         } else {
-            MetricRow("BMI", "%.2f".format(m.bmi))
+            MetricRow(
+                "BMI",
+                "%.2f".format(m.bmi),
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.bmi, it.bmi, MetricHigherIs.Worse)
+                },
+            )
             MetricRow("Ideal weight (Broca)", fmtKg(m.idealWeightKg))
-            MetricRow("Obesity degree", "${"%.1f".format(m.obesityDegree)}%")
+            MetricRow(
+                "Obesity degree",
+                "${"%.1f".format(m.obesityDegree)}%",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.obesityDegree, it.obesityDegree, MetricHigherIs.Worse)
+                },
+            )
 
             SectionTitle("Fat")
-            MetricRow("Body fat", "${"%.2f".format(m.fat)}%  ·  ${fmtKg(m.fatMassKg)}")
-            MetricRow("Subcutaneous fat", "${"%.2f".format(m.subcutaneousFat)}%")
-            MetricRow("Visceral fat", "${"%.2f".format(m.visceralFat)}%")
+            MetricRow(
+                "Body fat",
+                "${"%.2f".format(m.fat)}%  ·  ${fmtKg(m.fatMassKg)}",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.fat, it.fat, MetricHigherIs.Worse)
+                },
+            )
+            MetricRow(
+                "Subcutaneous fat",
+                "${"%.2f".format(m.subcutaneousFat)}%",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.subcutaneousFat, it.subcutaneousFat, MetricHigherIs.Worse)
+                },
+            )
+            MetricRow(
+                "Visceral fat",
+                "${"%.2f".format(m.visceralFat)}%",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.visceralFat, it.visceralFat, MetricHigherIs.Worse)
+                },
+            )
 
             SectionTitle("Lean mass & water")
-            MetricRow("Muscle", "${"%.2f".format(m.muscle)}%  ·  ${fmtKg(m.muscleMassKg)}")
-            MetricRow("Skeletal muscle", "${"%.2f".format(m.skeletalMuscle)}%")
-            MetricRow("Fat-free mass (LBM)", fmtKg(m.lbm))
-            MetricRow("Bone mass", fmtKg(m.bone))
-            MetricRow("Protein", "${"%.2f".format(m.protein)}%  ·  ${fmtKg(m.proteinKg)}")
-            MetricRow("Body water", "${"%.2f".format(m.water)}%  ·  ${fmtKg(m.waterKg)}")
+            MetricRow(
+                "Muscle",
+                "${"%.2f".format(m.muscle)}%  ·  ${fmtKg(m.muscleMassKg)}",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.muscleMassKg, it.muscleMassKg, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Skeletal muscle",
+                "${"%.2f".format(m.skeletalMuscle)}%",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.skeletalMuscle, it.skeletalMuscle, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Fat-free mass (LBM)",
+                fmtKg(m.lbm),
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.lbm, it.lbm, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Bone mass",
+                fmtKg(m.bone),
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.bone, it.bone, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Protein",
+                "${"%.2f".format(m.protein)}%  ·  ${fmtKg(m.proteinKg)}",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.proteinKg, it.proteinKg, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Body water",
+                "${"%.2f".format(m.water)}%  ·  ${fmtKg(m.waterKg)}",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.water, it.water, MetricHigherIs.Better)
+                },
+            )
 
             SectionTitle("Metabolism")
-            MetricRow("BMR", "${"%.0f".format(m.bmr)} kcal/day")
-            MetricRow("Metabolic age", "${m.bodyAge} y")
-            MetricRow("Body score", "${"%.0f".format(m.bodyScore)} / 100")
+            MetricRow(
+                "BMR",
+                "${"%.0f".format(m.bmr)} kcal/day",
+                change = previous?.takeIf { it.hasBodyComp }?.let {
+                    metricChange(m.bmr, it.bmr, MetricHigherIs.Better)
+                },
+            )
+            MetricRow(
+                "Metabolic age",
+                "${m.bodyAge} y",
+                change = previous?.takeIf { it.hasBodyComp && it.bodyAge > 0 && m.bodyAge > 0 }?.let {
+                    metricChange(m.bodyAge.toFloat(), it.bodyAge.toFloat(), MetricHigherIs.Worse)
+                },
+            )
+            MetricRow(
+                "Body score",
+                "${"%.0f".format(m.bodyScore)} / 100",
+                change = previous?.takeIf { it.hasBodyComp && it.bodyScore > 0f && m.bodyScore > 0f }?.let {
+                    metricChange(m.bodyScore, it.bodyScore, MetricHigherIs.Better)
+                },
+            )
 
             if (m.segments.isNotEmpty()) {
                 SectionTitle("Segmental composition")
@@ -137,7 +240,11 @@ private fun SectionTitle(title: String) {
 }
 
 @Composable
-private fun MetricRow(label: String, value: String) {
+private fun MetricRow(
+    label: String,
+    value: String,
+    change: MetricChange? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -151,13 +258,38 @@ private fun MetricRow(label: String, value: String) {
             style = MaterialTheme.typography.bodyMedium,
             softWrap = true,
         )
-        Text(
-            value,
+        Row(
             modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
-            fontFamily = PlexMonoFamily,
-            softWrap = true,
-        )
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                value,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = PlexMonoFamily,
+                softWrap = true,
+            )
+            if (change != null) {
+                val color = when (change.trend) {
+                    MetricTrend.Improved -> TrendGreen
+                    MetricTrend.Worsened -> TrendRed
+                }
+                Icon(
+                    imageVector = if (change.rose) {
+                        Icons.Filled.ArrowDropUp
+                    } else {
+                        Icons.Filled.ArrowDropDown
+                    },
+                    contentDescription = when (change.trend) {
+                        MetricTrend.Improved -> "Improved vs last reading"
+                        MetricTrend.Worsened -> "Worsened vs last reading"
+                    },
+                    tint = color,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
     }
 }
 

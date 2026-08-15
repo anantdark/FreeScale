@@ -73,6 +73,24 @@ class AppPreferences(private val context: Context) {
         prefs[KEY_FORCE_SHOW_LOADING_ANIMS] ?: false
     }
 
+    /**
+     * After each successful body-comp save, push overlapping fields to FitBuddy
+     * (at most once per calendar day; weight-only saves never auto-share). Default off.
+     */
+    val shareToFitBuddy: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_SHARE_TO_FITBUDDY] ?: false
+    }
+
+    /** Local `yyyy-MM-dd` of the last successful FitBuddy auto-share, if any. */
+    suspend fun lastFitBuddyAutoShareLocalDate(): String? =
+        context.dataStore.data.first()[KEY_LAST_FITBUDDY_AUTO_SHARE_DATE]
+
+    suspend fun markFitBuddyAutoShareLocalDate(localDate: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_LAST_FITBUDDY_AUTO_SHARE_DATE] = localDate
+        }
+    }
+
     val supportId: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[KEY_SUPPORT_ID].orEmpty()
     }
@@ -140,6 +158,12 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    suspend fun setShareToFitBuddy(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SHARE_TO_FITBUDDY] = enabled
+        }
+    }
+
     suspend fun setUserProfile(heightCm: String, ageYears: String, male: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_HEIGHT_CM] = heightCm
@@ -182,6 +206,9 @@ class AppPreferences(private val context: Context) {
         private val KEY_DEVELOPER_UNLOCKED = booleanPreferencesKey("developer_mode_unlocked")
         private val KEY_READING_ANIMATION = stringPreferencesKey("reading_animation_choice")
         private val KEY_FORCE_SHOW_LOADING_ANIMS = booleanPreferencesKey("force_show_loading_anims")
+        private val KEY_SHARE_TO_FITBUDDY = booleanPreferencesKey("share_to_fitbuddy")
+        private val KEY_LAST_FITBUDDY_AUTO_SHARE_DATE =
+            stringPreferencesKey("last_fitbuddy_auto_share_local_date")
         private val KEY_SUPPORT_ID = stringPreferencesKey("support_id")
         private val KEY_LAST_HEARTBEAT_DAY = stringPreferencesKey("sentry_last_heartbeat_utc_day")
         private val KEY_HEIGHT_CM = stringPreferencesKey("height_cm")

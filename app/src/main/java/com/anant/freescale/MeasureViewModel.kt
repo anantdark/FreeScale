@@ -6,11 +6,13 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anant.freescale.ble.BleScanner
 import com.anant.freescale.ble.GattClient
 import com.anant.freescale.ble.ScannedScale
+import com.anant.freescale.bridge.FitBuddyBridge
 import com.anant.freescale.crash.CrashReporter
 import com.anant.freescale.crash.HeartbeatInfo
 import com.anant.freescale.crash.HeartbeatKind
@@ -29,6 +31,7 @@ import com.anant.freescale.ui.loading.LoadingAnimChoice
 import com.anant.freescale.ui.progress.PeriodUnit
 import com.anant.freescale.ui.progress.ProgressMetric
 import com.anant.freescale.ui.progress.ProgressPeriod
+import com.anant.freescale.util.BackupShare
 import com.anant.freescale.util.BleLogger
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
@@ -113,6 +116,13 @@ data class BackupUiState(
     val isError: Boolean = false,
 )
 
+data class FitBuddyUiState(
+    val available: Boolean = false,
+    val busy: Boolean = false,
+    val message: String? = null,
+    val isError: Boolean = false,
+)
+
 class MeasureViewModel(app: Application) : AndroidViewModel(app) {
     private val preferences = AppPreferences(app)
     private val measurements = MeasurementRepository(app)
@@ -129,6 +139,9 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _backupState = MutableStateFlow(BackupUiState())
     val backupState: StateFlow<BackupUiState> = _backupState.asStateFlow()
+
+    private val _fitBuddyState = MutableStateFlow(FitBuddyUiState())
+    val fitBuddyState: StateFlow<FitBuddyUiState> = _fitBuddyState.asStateFlow()
 
     val measurementHistory: StateFlow<List<ScaleMeasurement>> =
         measurements.observeAllNewestFirst()
@@ -186,6 +199,9 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
     val forceShowLoadingAnimations: StateFlow<Boolean> = preferences.forceShowLoadingAnimations
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    val shareToFitBuddy: StateFlow<Boolean> = preferences.shareToFitBuddy
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private var scanner: BleScanner? = null
     private var gatt: GattClient? = null
     private var handler: DrTrustSSW532Handler? = null
@@ -195,6 +211,7 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
     init {
         BleLogger.startSession(app)
         BleLogger.i("FreeScale ViewModel init")
+        refreshFitBuddyAvailability()
         viewModelScope.launch {
             preferences.userProfile.collect { profile ->
                 _ui.update {
@@ -302,6 +319,139 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { preferences.setForceShowLoadingAnimations(enabled) }
     }
 
+    fun setShareToFitBuddy(enabled: Boolean) {
+        viewModelScope.launch { preferences.setShareToFitBuddy(enabled) }
+    }
+
+    fun refreshFitBuddyAvailability() {
+        viewModelScope.launch {
+            val available = withContext(Dispatchers.IO) {
+                FitBuddyBridge.isAvailable(getApplication())
+            }
+            _fitBuddyState.update { it.copy(available = available) }
+        }
+    }
+
+    fun setFitBuddyAvailable(available: Boolean) {
+        _fitBuddyState.update { it.copy(available = available) }
+    }
+
+    fun dismissFitBuddyMessage() {
+        _fitBuddyState.update { it.copy(message = null, isError = false) }
+    }
+
+    /** Manually push one reading's overlapping fields to FitBuddy. */
+    fun shareToFitBuddy(measurement: ScaleMeasurement) {
+        if (_fitBuddyState.value.busy) return
+        viewModelScope.launch {
+            _fitBuddyState.update { it.copy(busy = true, message = null, isError = false) }
+            val result = withContext(Dispatchers.IO) {
+                FitBuddyBridge.upsert(getApplication(), measurement)
+            }
+            result.fold(
+                onSuccess = {
+                    val whenStr = measurement.dateTime?.let {
+                        java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault())
+                            .format(it)
+                    } ?: "this reading"
+                    _fitBuddyState.update {
+                        it.copy(
+                            busy = false,
+                            available = true,
+                            message = "Saved ${String.format(java.util.Locale.US, "%.2f", measurement.weight)} kg " +
+                                "($whenStr) as a FitBuddy body measurement.",
+                            isError = false,
+                        )
+                    }
+                    BleLogger.i("FitBuddy share ok weight=${measurement.weight}")
+                },
+                onFailure = { e ->
+                    _fitBuddyState.update {
+                        it.copy(
+                            busy = false,
+                            available = FitBuddyBridge.isAvailable(getApplication()),
+                            message = e.message ?: "Something went wrong while talking to FitBuddy.",
+                            isError = true,
+                        )
+                    }
+                    BleLogger.e("FitBuddy share failed", e)
+                },
+            )
+        }
+    }
+
+    /** Pull overlapping body-comp readings from FitBuddy into FreeScale. */
+    fun restoreFromFitBuddy(mode: BackupImportMode) {
+        if (_fitBuddyState.value.busy) return
+        viewModelScope.launch {
+            _fitBuddyState.update { it.copy(busy = true, message = null, isError = false) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val rows = FitBuddyBridge.exportAll(getApplication()).getOrThrow()
+                    val imported = when (mode) {
+                        BackupImportMode.Replace -> {
+                            measurements.deleteAll()
+                            measurements.insertAll(rows)
+                            rows.size
+                        }
+                        BackupImportMode.Merge -> {
+                            val existing = measurements.allRecordedAtEpochMs()
+                            val fresh = rows.filter { m ->
+                                val at = m.dateTime?.time ?: return@filter true
+                                at !in existing
+                            }
+                            measurements.insertAll(fresh)
+                            fresh.size
+                        }
+                    }
+                    val latest = measurements.latest()
+                    Triple(imported, rows.size, latest)
+                }
+            }
+            result.fold(
+                onSuccess = { (imported, total, latest) ->
+                    if (latest != null) {
+                        _ui.update {
+                            it.copy(
+                                lastMeasurement = latest,
+                                sessionBodyComp = if (latest.hasBodyComp) {
+                                    latest
+                                } else {
+                                    it.sessionBodyComp
+                                },
+                            )
+                        }
+                    }
+                    _fitBuddyState.update {
+                        it.copy(
+                            busy = false,
+                            available = true,
+                            message = when (mode) {
+                                BackupImportMode.Replace ->
+                                    "Restored $imported reading${if (imported == 1) "" else "s"} from FitBuddy"
+                                BackupImportMode.Merge ->
+                                    "Merged $imported of $total from FitBuddy"
+                            },
+                            isError = false,
+                        )
+                    }
+                    BleLogger.i("FitBuddy restore ok imported=$imported total=$total mode=$mode")
+                },
+                onFailure = { e ->
+                    _fitBuddyState.update {
+                        it.copy(
+                            busy = false,
+                            available = FitBuddyBridge.isAvailable(getApplication()),
+                            message = e.message ?: "Restore from FitBuddy failed",
+                            isError = true,
+                        )
+                    }
+                    BleLogger.e("FitBuddy restore failed", e)
+                },
+            )
+        }
+    }
+
     fun setProgressPeriodUnit(unit: PeriodUnit) {
         _progress.update { it.copy(periodUnit = unit, periodAnchor = LocalDate.now()) }
     }
@@ -329,8 +479,8 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
         _backupState.update { it.copy(message = null, isError = false) }
     }
 
-    /** Write a FreeScale JSON backup to [uri] (SAF CreateDocument result). */
-    fun exportBackup(uri: Uri) {
+    /** Write a FreeScale JSON backup to cache and open the system share sheet. */
+    fun exportBackup() {
         if (_backupState.value.busy) return
         viewModelScope.launch {
             _backupState.update { BackupUiState(busy = true) }
@@ -340,22 +490,36 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                     val rows = measurements.getAllOldestFirst()
                     val profile = preferences.userProfile.first()
                     val json = MeasurementBackupJson.encode(rows, profile)
-                    app.contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(json.toByteArray(Charsets.UTF_8))
-                        out.flush()
-                    } ?: error("Could not open export file")
-                    rows.size
+                    val dir = java.io.File(app.cacheDir, "share").apply { mkdirs() }
+                    val file = java.io.File(
+                        dir,
+                        "FreeScale-backup-${java.time.LocalDate.now()}.json",
+                    )
+                    file.writeText(json, Charsets.UTF_8)
+                    file to rows.size
                 }
             }
             result.fold(
-                onSuccess = { count ->
-                    _backupState.update {
-                        BackupUiState(
-                            busy = false,
-                            message = "Exported $count reading${if (count == 1) "" else "s"}",
-                            isError = false,
+                onSuccess = { (file, count) ->
+                    runCatching {
+                        BackupShare.shareJsonFile(
+                            getApplication(),
+                            file,
+                            chooserTitle = "Share FreeScale backup",
                         )
+                    }.onFailure { e ->
+                        _backupState.update {
+                            BackupUiState(
+                                busy = false,
+                                message = e.message ?: "Could not open share sheet",
+                                isError = true,
+                            )
+                        }
+                        BleLogger.e("Backup share sheet failed", e)
+                        return@fold
                     }
+                    // Share sheet owns the rest of the flow; don't leave a sticky status under the buttons.
+                    _backupState.update { BackupUiState() }
                     BleLogger.i("Backup export ok ($count readings)")
                 },
                 onFailure = { e ->
@@ -761,10 +925,60 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.IO) { measurements.save(stamped) }
             }.onSuccess { id ->
                 BleLogger.i("Saved measurement id=$id weight=${stamped.weight}")
+                if (stamped.hasBodyComp) {
+                    maybeAutoShareToFitBuddy(stamped)
+                }
             }.onFailure { t ->
                 BleLogger.e("Failed to persist measurement", t)
             }
         }
+    }
+
+    /**
+     * Auto-push body-comp readings only (never weight-only), at most once per local calendar day.
+     */
+    private suspend fun maybeAutoShareToFitBuddy(stamped: ScaleMeasurement) {
+        if (!stamped.hasBodyComp) {
+            BleLogger.i("Skip FitBuddy auto-share; weight-only reading")
+            return
+        }
+        if (!preferences.shareToFitBuddy.first()) return
+        val localDate = fitBuddyAutoShareLocalDate(stamped) ?: return
+        if (preferences.lastFitBuddyAutoShareLocalDate() == localDate) {
+            BleLogger.i("Skip FitBuddy auto-share; already pushed for $localDate")
+            return
+        }
+        val result = withContext(Dispatchers.IO) {
+            FitBuddyBridge.upsert(getApplication(), stamped)
+        }
+        result.fold(
+            onSuccess = {
+                preferences.markFitBuddyAutoShareLocalDate(localDate)
+                val weight = String.format(java.util.Locale.US, "%.2f", stamped.weight)
+                Toast.makeText(
+                    getApplication(),
+                    "Synced to FitBuddy · $weight kg",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                BleLogger.i("Auto-shared to FitBuddy weight=${stamped.weight} date=$localDate")
+            },
+            onFailure = { e ->
+                BleLogger.e("Auto-share to FitBuddy failed", e)
+                _fitBuddyState.update {
+                    it.copy(
+                        available = FitBuddyBridge.isAvailable(getApplication()),
+                        message = e.message ?: "Auto-share to FitBuddy failed",
+                        isError = true,
+                    )
+                }
+            },
+        )
+    }
+
+    /** Calendar day of the reading in local time (`yyyy-MM-dd`), used to cap auto-share to once/day. */
+    private fun fitBuddyAutoShareLocalDate(m: ScaleMeasurement): String? {
+        val at = m.dateTime ?: return null
+        return java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(at)
     }
 
     fun disconnect() {
