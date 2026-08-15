@@ -110,6 +110,8 @@ jobs:
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
 
+      # make_latest: true — this channel owns /releases/latest.
+      # F-Droid tags use a separate workflow with make_latest: false.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
