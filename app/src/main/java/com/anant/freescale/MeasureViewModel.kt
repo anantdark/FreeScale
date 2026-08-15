@@ -11,13 +11,22 @@ import androidx.lifecycle.viewModelScope
 import com.anant.freescale.ble.BleScanner
 import com.anant.freescale.ble.GattClient
 import com.anant.freescale.ble.ScannedScale
+import com.anant.freescale.crash.CrashReporter
+import com.anant.freescale.crash.HeartbeatInfo
+import com.anant.freescale.crash.HeartbeatKind
+import com.anant.freescale.crash.HeartbeatScheduler
 import com.anant.freescale.data.AppPreferences
 import com.anant.freescale.data.GenderType
 import com.anant.freescale.data.MeasurePhase
 import com.anant.freescale.data.ScaleMeasurement
 import com.anant.freescale.data.ScaleUser
+import com.anant.freescale.data.db.MeasurementRepository
+import com.anant.freescale.data.remote.UpdateCheckResult
+import com.anant.freescale.data.remote.UpdateChecker
 import com.anant.freescale.scales.DrTrustSSW532Handler
+import com.anant.freescale.ui.loading.LoadingAnimChoice
 import com.anant.freescale.util.BleLogger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,8 +36,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.ZoneOffset
 import java.util.Calendar
-
+import java.util.Date
 
 data class UiState(
     val scanning: Boolean = false,
@@ -55,11 +67,24 @@ data class UiState(
     val male: Boolean = true,
 )
 
+/** State of the Settings update-check flow / update prompt. */
+data class UpdateUiState(
+    val isChecking: Boolean = false,
+    val updateInfo: UpdateCheckResult.Available? = null,
+    val statusMessage: String? = null,
+    val statusIsError: Boolean = false,
+)
+
 class MeasureViewModel(app: Application) : AndroidViewModel(app) {
     private val preferences = AppPreferences(app)
+    private val measurements = MeasurementRepository(app)
+    private val updateChecker = UpdateChecker()
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    private val _updateState = MutableStateFlow(UpdateUiState())
+    val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
 
     val debugMode: StateFlow<Boolean> = preferences.debugMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -71,6 +96,29 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val reduceAnimations: StateFlow<Boolean> = preferences.reduceAnimations
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val crashReportingEnabled: StateFlow<Boolean> = preferences.crashReportingEnabled
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            AppPreferences.defaultCrashReportingEnabled(),
+        )
+
+    val autoCheckUpdates: StateFlow<Boolean> = preferences.autoCheckUpdates
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            AppPreferences.defaultAutoCheckUpdates(),
+        )
+
+    val developerModeUnlocked: StateFlow<Boolean> = preferences.developerModeUnlocked
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val readingAnimationChoice: StateFlow<String> = preferences.readingAnimationChoice
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LoadingAnimChoice.RANDOM)
+
+    val forceShowLoadingAnimations: StateFlow<Boolean> = preferences.forceShowLoadingAnimations
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private var scanner: BleScanner? = null
@@ -91,6 +139,21 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                         male = profile.male,
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            val latest = withContext(Dispatchers.IO) { measurements.latest() }
+            if (latest != null) {
+                _ui.update {
+                    it.copy(
+                        lastMeasurement = latest,
+                        sessionBodyComp = if (latest.hasBodyComp) latest else it.sessionBodyComp,
+                    )
+                }
+                BleLogger.i(
+                    "Restored last measurement ${latest.weight} kg " +
+                        "(${latest.dateTime})",
+                )
             }
         }
     }
@@ -133,6 +196,125 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setReduceAnimations(enabled: Boolean) {
         viewModelScope.launch { preferences.setReduceAnimations(enabled) }
+    }
+
+    fun setCrashReportingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setCrashReportingEnabled(enabled)
+            CrashReporter.setReportingEnabled(enabled)
+            val app = getApplication<Application>()
+            if (enabled) {
+                HeartbeatScheduler.schedule(app)
+                val today = LocalDate.now(ZoneOffset.UTC).toString()
+                if (preferences.lastHeartbeatUtcDay() != today) {
+                    val info = HeartbeatInfo(
+                        channel = if (BuildConfig.IS_FDROID) "fdroid" else "github",
+                        isDebugMode = debugMode.value,
+                    )
+                    if (CrashReporter.sendHeartbeat(info, HeartbeatKind.DAILY)) {
+                        preferences.markHeartbeatSent(today)
+                    }
+                }
+            } else {
+                HeartbeatScheduler.cancel(app)
+            }
+        }
+    }
+
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoCheckUpdates(enabled) }
+    }
+
+    fun setDeveloperModeUnlocked(unlocked: Boolean) {
+        viewModelScope.launch { preferences.setDeveloperModeUnlocked(unlocked) }
+    }
+
+    fun setReadingAnimationChoice(choice: String) {
+        viewModelScope.launch { preferences.setReadingAnimationChoice(choice) }
+    }
+
+    fun setForceShowLoadingAnimations(enabled: Boolean) {
+        viewModelScope.launch { preferences.setForceShowLoadingAnimations(enabled) }
+    }
+
+    /**
+     * Settings “crafted with ♥” double-tap. Sends a confetti heartbeat when crash
+     * reporting is on (ignores the once-per-day gate so the tap still pulses).
+     */
+    fun sendHeartbeatFromLoveTap() {
+        viewModelScope.launch {
+            val info = HeartbeatInfo(
+                channel = if (BuildConfig.IS_FDROID) "fdroid" else "github",
+                isDebugMode = debugMode.value,
+            )
+            val sent = withContext(Dispatchers.IO) {
+                CrashReporter.sendHeartbeat(info, HeartbeatKind.CONFETTI)
+            }
+            if (sent) {
+                preferences.markHeartbeatSent(LocalDate.now(ZoneOffset.UTC).toString())
+            }
+        }
+    }
+
+    /** Manual or automatic check; [silent] skips status text for up-to-date / network errors. */
+    fun checkForUpdates(currentVersionCode: Int = BuildConfig.VERSION_CODE, silent: Boolean = false) {
+        if (BuildConfig.IS_FDROID) return
+        if (_updateState.value.isChecking) return
+        viewModelScope.launch {
+            _updateState.update {
+                it.copy(
+                    isChecking = true,
+                    statusMessage = if (silent) it.statusMessage else null,
+                    statusIsError = if (silent) it.statusIsError else false,
+                )
+            }
+            when (val result = updateChecker.checkForUpdate(currentVersionCode)) {
+                is UpdateCheckResult.Available -> _updateState.update {
+                    it.copy(
+                        isChecking = false,
+                        updateInfo = result,
+                        statusMessage = null,
+                        statusIsError = false,
+                    )
+                }
+                UpdateCheckResult.UpToDate -> _updateState.update {
+                    it.copy(
+                        isChecking = false,
+                        updateInfo = null,
+                        statusMessage = if (silent) null else "You're on the latest version",
+                        statusIsError = false,
+                    )
+                }
+                is UpdateCheckResult.Error -> _updateState.update {
+                    it.copy(
+                        isChecking = false,
+                        updateInfo = null,
+                        statusMessage = if (silent) null else result.message,
+                        statusIsError = !silent,
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissUpdatePrompt() {
+        _updateState.update {
+            it.copy(
+                updateInfo = null,
+                statusMessage = null,
+                statusIsError = false,
+            )
+        }
+    }
+
+    fun acknowledgeUpdateDownloadStarted() {
+        _updateState.update {
+            it.copy(
+                updateInfo = null,
+                statusMessage = "Download started in your browser — install the APK when it finishes",
+                statusIsError = false,
+            )
+        }
     }
 
     /** True once per process when auto-connect is on and we have not tried yet. */
@@ -286,14 +468,28 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(measurePhase = phase) }
             },
             onMeasurement = { m ->
+                val stamped = if (m.dateTime == null) {
+                    m.copy(dateTime = Date())
+                } else {
+                    m
+                }
                 _ui.update {
                     it.copy(
-                        measurement = m,
-                        lastMeasurement = m,
-                        sessionBodyComp = if (m.hasBodyComp) m else it.sessionBodyComp,
+                        measurement = stamped,
+                        lastMeasurement = stamped,
+                        sessionBodyComp = if (stamped.hasBodyComp) stamped else it.sessionBodyComp,
                         status = "Measurement complete",
                         measurePhase = MeasurePhase.Complete,
                     )
+                }
+                viewModelScope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) { measurements.save(stamped) }
+                    }.onSuccess { id ->
+                        BleLogger.i("Saved measurement id=$id weight=${stamped.weight}")
+                    }.onFailure { t ->
+                        BleLogger.e("Failed to persist measurement", t)
+                    }
                 }
             },
             onLinkLost = { reason ->

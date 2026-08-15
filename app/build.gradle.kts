@@ -3,7 +3,14 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
 }
+
+// Sentry DSN committed obfuscated (XOR + Base64) — same fleet project as FitBuddy.
+// Empty blob → CrashReporter stays uninitialized.
+val sentryDsnMaskSeed = "fitbuddy.sentry.v1"
+val sentryDsnBlobEscaped =
+    "Dh0AEgZeS1YeF1RWQ0YbH0JXUVlMARYCAEAeQANZFUsYHUMGUlgSWjULUEwfQlJbQkZKG0EAXlhAVlsNCh5LABFAEBdXXRNfEhsNTBwLS00bQlRZQURNGkMBVF1HUUM="
 
 // CI overrides versionCode/versionName per build via -PappVersionCode=<GITHUB_RUN_NUMBER>
 // and -PappVersionName=0.1.<GITHUB_RUN_NUMBER> so every commit to main produces an
@@ -36,13 +43,17 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "IS_FDROID", "false")
+        buildConfigField("String", "SENTRY_DSN_BLOB", "\"$sentryDsnBlobEscaped\"")
+        buildConfigField("String", "SENTRY_DSN_MASK", "\"$sentryDsnMaskSeed\"")
     }
 
     // github flavor: GitHub Releases / sideload. fdroid flavor: F-Droid owns updates.
+    // isDefault → Studio Active Build Variant is githubDebug (not a stale unflavored debug).
     flavorDimensions += "distribution"
     productFlavors {
         create("github") {
             dimension = "distribution"
+            isDefault = true
             buildConfigField("boolean", "IS_FDROID", "false")
         }
         create("fdroid") {
@@ -134,6 +145,11 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.sentry.android)
+    implementation(libs.okhttp)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     testImplementation(libs.junit)

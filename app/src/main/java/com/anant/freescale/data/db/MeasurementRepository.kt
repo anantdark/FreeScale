@@ -1,0 +1,21 @@
+package com.anant.freescale.data.db
+
+import android.content.Context
+import com.anant.freescale.data.ScaleMeasurement
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+class MeasurementRepository(context: Context) {
+    private val dao = FreeScaleDatabase.get(context).measurementDao()
+
+    suspend fun save(measurement: ScaleMeasurement): Long =
+        dao.insert(MeasurementEntity.fromDomain(measurement))
+
+    suspend fun latest(): ScaleMeasurement? =
+        dao.latest()?.toDomain()
+
+    fun observeRecent(limit: Int = 200): Flow<List<ScaleMeasurement>> =
+        dao.observeRecent(limit).map { rows -> rows.map { it.toDomain() } }
+
+    suspend fun count(): Int = dao.count()
+}

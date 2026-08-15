@@ -25,7 +25,7 @@ fun ProgressScreen() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "Coming after local history is wired up.",
+            "Local history is saved on this phone. Trends charts come next.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

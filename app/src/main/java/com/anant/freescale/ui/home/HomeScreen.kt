@@ -99,6 +99,8 @@ fun HomeScreen(
     vm: MeasureViewModel,
     debugMode: Boolean,
     reduceAnimations: Boolean,
+    readingAnimationChoice: String = LoadingAnimChoice.RANDOM,
+    forceShowLoadingAnimations: Boolean = false,
 ) {
     val state by vm.ui.collectAsStateWithLifecycle()
     val autoConnect by vm.autoConnect.collectAsStateWithLifecycle()
@@ -233,6 +235,8 @@ fun HomeScreen(
             state = state,
             scroll = scroll,
             reduceAnimations = reduceAnimations,
+            readingAnimationChoice = readingAnimationChoice,
+            forceShowLoadingAnimations = forceShowLoadingAnimations,
         )
 
         AnimatedVisibility(
@@ -488,6 +492,8 @@ private fun InstrumentReadout(
     state: UiState,
     scroll: ScrollState,
     reduceAnimations: Boolean,
+    readingAnimationChoice: String,
+    forceShowLoadingAnimations: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
     val motion = MaterialTheme.motionScheme
@@ -528,7 +534,8 @@ private fun InstrumentReadout(
     val measuringActive = phase == MeasurePhase.Weighing ||
         phase == MeasurePhase.WeightStable ||
         phase == MeasurePhase.MeasuringBia
-    val showMeasuringBanner = measuringActive && !reduceAnimations
+    val showMeasuringBanner =
+        (measuringActive || forceShowLoadingAnimations) && !reduceAnimations
     val contentSwap = if (reduceAnimations) {
         EnterTransition.None togetherWith ExitTransition.None
     } else {
@@ -713,9 +720,21 @@ private fun InstrumentReadout(
             ) {
                 LoadingAnimationHost(
                     slot = LoadingAnimationSlot.READING,
-                    animationChoice = LoadingAnimChoice.RANDOM,
-                    label = headline,
-                    captions = measuringBannerCaptions(phase),
+                    animationChoice = readingAnimationChoice,
+                    label = if (forceShowLoadingAnimations && !measuringActive) {
+                        "PREVIEW"
+                    } else {
+                        headline
+                    },
+                    captions = if (forceShowLoadingAnimations && !measuringActive) {
+                        listOf(
+                            "developer preview…",
+                            "force-show enabled…",
+                            "weigh in to see live…",
+                        )
+                    } else {
+                        measuringBannerCaptions(phase)
+                    },
                 )
             }
 
