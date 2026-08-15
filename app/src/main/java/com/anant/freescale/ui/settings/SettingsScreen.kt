@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -57,12 +58,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
@@ -85,6 +88,8 @@ import com.anant.freescale.ui.loading.LoadingAnimChoice
 import com.anant.freescale.ui.loading.LoadingAnimationHost
 import com.anant.freescale.ui.loading.LoadingAnimationRegistry
 import com.anant.freescale.ui.loading.LoadingAnimationSlot
+import com.anant.freescale.ui.loading.LoadingHoldBoostMultiplier
+import com.anant.freescale.ui.loading.loadingHoldToBoost
 import kotlinx.coroutines.delay
 
 private const val DEVELOPER_UNLOCK_TAPS = 31
@@ -681,6 +686,7 @@ private fun AnimationPreviewDialog(
     animationChoice: String,
     onDismiss: () -> Unit,
 ) {
+    var touchSpeedMultiplier by remember { mutableFloatStateOf(1f) }
     LaunchedEffect(Unit) {
         delay(8_000)
         onDismiss()
@@ -689,16 +695,36 @@ private fun AnimationPreviewDialog(
         onDismissRequest = onDismiss,
         title = { Text("Animation preview") },
         text = {
-            LoadingAnimationHost(
-                slot = LoadingAnimationSlot.READING,
-                animationChoice = animationChoice,
-                label = "PREVIEW",
-                captions = listOf(
-                    "developer preview…",
-                    "no scale required…",
-                    "tap dismiss anytime…",
-                ),
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(320.dp)
+                    .clip(RoundedCornerShape(20.dp)),
+            ) {
+                LoadingAnimationHost(
+                    slot = LoadingAnimationSlot.READING,
+                    animationChoice = animationChoice,
+                    modifier = Modifier.fillMaxSize(),
+                    label = "PREVIEW",
+                    captions = listOf(
+                        "developer preview…",
+                        "hold to speed up…",
+                        "tap dismiss anytime…",
+                    ),
+                    speedMultiplier = touchSpeedMultiplier,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .loadingHoldToBoost { boosting ->
+                            touchSpeedMultiplier = if (boosting) {
+                                LoadingHoldBoostMultiplier
+                            } else {
+                                1f
+                            }
+                        },
+                )
+            }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {

@@ -7,14 +7,13 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 // ---------------------------------------------------------------------------
-// Data model
-// ---------------------------------------------------------------------------
+ // Data model
+ // ---------------------------------------------------------------------------
 
 /**
- * Elliptical Keplerian orbit around the sun (perspective-flattened).
+ * Elliptical Keplerian orbit around a fixed sun (top-down observatory view).
  *
- * - [orbitA]: semi-major axis as a fraction of canvas width
- * - [orbitB]: semi-minor axis as a fraction of canvas half-height
+ * - [orbitA] / [orbitB]: semi-axes as a fraction of the card's shorter side
  * - [angularVel]: rad/ms — strictly decreasing inner → outer (Kepler)
  * - [bodyScale]: relative planet disk size
  * - [hasRing]: faint Saturn-style ring
@@ -26,208 +25,129 @@ internal data class PlanetSpec(
     val phase: Double,
     val color: Color,
     val bodyScale: Float = 1f,
-    val hasRing: Boolean = false
+    val hasRing: Boolean = false,
 )
 
 // ---------------------------------------------------------------------------
-// Scaled-time accumulator
-// ---------------------------------------------------------------------------
+ // Scaled-time accumulator
+ // ---------------------------------------------------------------------------
 
 internal fun accumulateScaledTime(prev: Double, rawDelta: Long, speed: Float): Double =
     prev + rawDelta.coerceAtLeast(0L) * speed.toDouble()
 
-// ---------------------------------------------------------------------------
-// Sun — true left→right end-to-end (planets may clip off-screen)
-// ---------------------------------------------------------------------------
-
-/** Sun end-to-end crossing duration in scaled ms (shorter = faster travel). */
-internal const val SUN_PERIOD_MS: Double = 4_400.0
-
-/** Calm default playback — sun + planets advance together. */
-internal const val BANNER_SPEED_NATURAL: Float = 0.14f
+/** Calm default playback for full-card orbits. */
+internal const val BANNER_SPEED_NATURAL: Float = 0.18f
 
 /** Press-and-hold playback — sped-up but still readable. */
-internal const val BANNER_SPEED_BOOST: Float = 0.50f
+internal const val BANNER_SPEED_BOOST: Float = 0.55f
 
-/** Normalized cycle progress in [0, 1]. */
-internal fun sunProgress(tMs: Double, periodMs: Double = SUN_PERIOD_MS): Float =
-    ((tMs % periodMs) / periodMs).toFloat().coerceIn(0f, 1f)
-
-/**
- * Only softens the sun's wrap teleport. Planets intentionally stay visible while
- * the sun sits on an edge (opposite-side bodies hang into the frame).
- */
-internal fun edgeFade(progress: Float, fade: Float = 0.035f): Float {
-    val p = progress.coerceIn(0f, 1f)
-    val f = fade.coerceIn(0.001f, 0.5f)
-    return when {
-        p < f -> p / f
-        p > 1f - f -> (1f - p) / f
-        else -> 1f
-    }.coerceIn(0f, 1f)
-}
-
-/**
- * Sun X travels nearly edge→edge. Margin is only for the solar disk — outer
- * planets are allowed to leave the canvas.
- */
-internal fun sunX(tMs: Double, canvasW: Float): Float {
-    val t = sunProgress(tMs)
-    val margin = canvasW * 0.045f
-    return margin + t * (canvasW - 2f * margin)
-}
-
-/** Slight ecliptic bob. */
-internal fun sunY(tMs: Double, canvasH: Float): Float {
-    val cy = canvasH * 0.44f
-    val bob = canvasH * 0.028f
-    return cy + bob * sin(2.0 * PI * tMs / (SUN_PERIOD_MS * 0.9) + 0.4).toFloat()
-}
+/** Reference period used to anchor Kepler ω (no traveling sun). */
+internal const val ORBIT_TEMPO_MS: Double = 4_400.0
 
 internal fun theta(spec: PlanetSpec, tMs: Double): Double =
     spec.phase + spec.angularVel * tMs
 
 /**
- * Planet position on a perspective ellipse around the sun.
+ * Planet position on a top-down ellipse around a fixed sun.
  *
  * Returns Triple(x, y, z):
- *   x/y — canvas coords on the ellipse (may be off-screen)
- *   z   — depth cue ∈ [-1, 1]; z ≥ 0 is nearer the camera
+ *   x/y — canvas coords
+ *   z   — depth cue ∈ [-1, 1]; z ≥ 0 is nearer the camera (slight tip)
  */
 internal fun orbitalPoint(
     spec: PlanetSpec,
     tMs: Double,
     sx: Float,
     sy: Float,
-    halfH: Float,
-    canvasW: Float
+    scale: Float,
 ): Triple<Float, Float, Float> {
     val th = theta(spec, tMs)
     val cosT = cos(th).toFloat()
     val sinT = sin(th).toFloat()
-    val a = spec.orbitA * canvasW
-    val b = spec.orbitB * halfH
+    val a = spec.orbitA * scale
+    val b = spec.orbitB * scale
+    // Mild perspective tip so orbits read as disks, not flat rings.
     val z = sinT
-    val foreshorten = 0.86f + 0.14f * ((z + 1f) / 2f)
+    val foreshorten = 0.94f + 0.06f * ((z + 1f) / 2f)
     val x = sx + a * cosT * foreshorten
     val y = sy + b * sinT
     return Triple(x, y, z)
 }
 
-/** Legacy alias — same as [orbitalPoint] with sun derived from time. */
-internal fun helicalPoint(
-    spec: PlanetSpec,
-    tMs: Double,
-    cy: Float,
-    halfW: Float,
-    halfH: Float,
-    canvasW: Float
-): Triple<Float, Float, Float> {
-    val sx = sunX(tMs, canvasW)
-    val sy = sunY(tMs, halfH * 2f)
-    return orbitalPoint(spec, tMs, sx, sy, halfH, canvasW)
-}
-
 // ---------------------------------------------------------------------------
-// Depth mappings
-// ---------------------------------------------------------------------------
+ // Depth mappings
+ // ---------------------------------------------------------------------------
 
-internal fun depthScale(z: Float, min: Float = 0.6f, max: Float = 1.25f): Float =
+internal fun depthScale(z: Float, min: Float = 0.78f, max: Float = 1.12f): Float =
     min + (max - min) * ((z + 1f) / 2f)
 
-internal fun depthAlpha(z: Float, min: Float = 0.45f): Float =
+internal fun depthAlpha(z: Float, min: Float = 0.55f): Float =
     min + (1f - min) * ((z + 1f) / 2f)
 
 // ---------------------------------------------------------------------------
-// Intensity ramps
-// ---------------------------------------------------------------------------
-
-internal fun streakScale(speed: Float): Float = speed
-
-internal fun trailAlpha(step: Int, tailSteps: Int, depthAlpha: Float): Float =
-    (1f - step.toFloat() / tailSteps.toFloat()) * 0.28f * depthAlpha
-
-// ---------------------------------------------------------------------------
-// Draw-order partition
-// ---------------------------------------------------------------------------
+ // Draw-order partition
+ // ---------------------------------------------------------------------------
 
 internal fun orderByDepth(
-    states: List<Pair<PlanetSpec, Triple<Float, Float, Float>>>
-): Pair<List<Pair<PlanetSpec, Triple<Float, Float, Float>>>,
-        List<Pair<PlanetSpec, Triple<Float, Float, Float>>>> {
+    states: List<Pair<PlanetSpec, Triple<Float, Float, Float>>>,
+): Pair<
+    List<Pair<PlanetSpec, Triple<Float, Float, Float>>>,
+    List<Pair<PlanetSpec, Triple<Float, Float, Float>>>,
+    > {
     val back = states.filter { it.second.third < 0f }.sortedBy { it.second.third }
     val front = states.filter { it.second.third >= 0f }.sortedBy { it.second.third }
     return Pair(back, front)
 }
 
 // ---------------------------------------------------------------------------
-// Real solar-system composition (compressed AU spacing, true period ratios)
-// ---------------------------------------------------------------------------
+ // Real solar-system composition (compressed AU spacing, true period ratios)
+ // ---------------------------------------------------------------------------
 
-/**
- * True semi-major axes in AU. Display radii use a^0.42 compression so all eight
- * fit a banner while preserving inner crowding vs outer sprawl.
- */
 private val PLANET_AU = doubleArrayOf(
-    0.387,  // Mercury
-    0.723,  // Venus
-    1.000,  // Earth
-    1.524,  // Mars
-    5.203,  // Jupiter
-    9.537,  // Saturn
+    0.387, // Mercury
+    0.723, // Venus
+    1.000, // Earth
+    1.524, // Mars
+    5.203, // Jupiter
+    9.537, // Saturn
     19.191, // Uranus
-    30.069  // Neptune
+    30.069, // Neptune
 )
 
-/**
- * Sidereal orbital periods in Earth years (IAU / NASA mean values).
- * Angular speeds use ω ∝ 1/P so relative motion matches the real solar system.
- */
 internal val PLANET_PERIOD_YEARS = doubleArrayOf(
-    0.2408467, // Mercury
-    0.6151973, // Venus
-    1.0000174, // Earth
-    1.8808476, // Mars
-    11.862615, // Jupiter
-    29.447498, // Saturn
-    84.016846, // Uranus
-    164.79132  // Neptune (slowest)
+    0.2408467,
+    0.6151973,
+    1.0000174,
+    1.8808476,
+    11.862615,
+    29.447498,
+    84.016846,
+    164.79132,
 )
 
-/**
- * Orbits the slowest planet (Neptune) completes during one sun crossing.
- * Kept low so outer bodies drift calmly while the sun still crosses the banner.
- */
-// Kept in step with SUN_PERIOD_MS so planet ω stays calm when the sun is sped up.
-internal const val SLOWEST_ORBITS_PER_CROSSING: Double = 0.067
+/** Orbits Neptune completes during one [ORBIT_TEMPO_MS] window. */
+internal const val SLOWEST_ORBITS_PER_TEMPO: Double = 0.09
 
 private data class BodyLook(
     val bodyScale: Float,
     val phase: Double,
-    val hasRing: Boolean = false
+    val hasRing: Boolean = false,
 )
 
-/** Orbits completed by [spec] during one full [SUN_PERIOD_MS] crossing. */
-internal fun orbitsPerCrossing(spec: PlanetSpec): Double =
-    spec.angularVel * SUN_PERIOD_MS / (2.0 * PI)
-
 /**
- * Eight planets with real relative speeds (true sidereal period ratios) and
- * AU-compressed orbits. Tempo is anchored on Neptune at
- * [SLOWEST_ORBITS_PER_CROSSING] per sun pass; inner bodies scale by P_nep / P_i.
- *
- * Indices 0–2 carry injected macro colors.
+ * Eight planets sized for a full instrument card. Orbits fan out from a
+ * corner-anchored sun so the system sweeps the readout without crowding text.
  */
 internal fun solarSystemPlanets(protein: Color, carbs: Color, fats: Color): List<PlanetSpec> {
     val looks = listOf(
-        BodyLook(0.48f, 0.40),                 // Mercury — protein
-        BodyLook(0.70f, 1.90),                 // Venus  — carbs
-        BodyLook(0.76f, 3.20),                 // Earth  — fats
-        BodyLook(0.58f, 4.60),                 // Mars
-        BodyLook(1.55f, 5.80),                 // Jupiter
-        BodyLook(1.35f, 1.10, hasRing = true), // Saturn
-        BodyLook(1.05f, 2.70),                 // Uranus
-        BodyLook(1.00f, 4.90),                 // Neptune
+        BodyLook(0.55f, 0.40), // Mercury — protein
+        BodyLook(0.78f, 1.90), // Venus — carbs
+        BodyLook(0.82f, 3.20), // Earth — fats
+        BodyLook(0.62f, 4.60), // Mars
+        BodyLook(1.65f, 5.80), // Jupiter
+        BodyLook(1.40f, 1.10, hasRing = true), // Saturn
+        BodyLook(1.10f, 2.70), // Uranus
+        BodyLook(1.05f, 4.90), // Neptune
     )
     val colors = listOf(
         protein,
@@ -240,20 +160,19 @@ internal fun solarSystemPlanets(protein: Color, carbs: Color, fats: Color): List
         Color(0xFF64B5F6),
     )
 
-    // Compress AU → banner fraction; Neptune ≈ 0.34 so it hangs off-screen at edges.
+    // Compress AU so Neptune reaches ~0.95 of the short-side scale unit.
     val compress = 0.42
     val raw = PLANET_AU.map { it.pow(compress) }
     val maxRaw = raw.last()
-    val orbitScale = 0.34 / maxRaw
+    val orbitScale = 0.95 / maxRaw
 
     val pSlowest = PLANET_PERIOD_YEARS.last()
-    val omegaSlowest = SLOWEST_ORBITS_PER_CROSSING * 2.0 * PI / SUN_PERIOD_MS
+    val omegaSlowest = SLOWEST_ORBITS_PER_TEMPO * 2.0 * PI / ORBIT_TEMPO_MS
 
     return looks.mapIndexed { i, look ->
         val orbitA = (raw[i] * orbitScale).toFloat()
-        // Tip the ellipse: outer orbits flatter (more foreshortened disk view).
-        val orbitB = (0.20f + orbitA * 1.85f).coerceAtMost(0.92f)
-        // Real relative speeds: ω_i / ω_nep = P_nep / P_i
+        // Near-circular top-down ellipses (slight tip).
+        val orbitB = orbitA * (0.88f + 0.04f * (i / 7f))
         val omega = omegaSlowest * (pSlowest / PLANET_PERIOD_YEARS[i])
         PlanetSpec(
             orbitA = orbitA,
@@ -262,12 +181,11 @@ internal fun solarSystemPlanets(protein: Color, carbs: Color, fats: Color): List
             phase = look.phase,
             color = colors[i],
             bodyScale = look.bodyScale,
-            hasRing = look.hasRing
+            hasRing = look.hasRing,
         )
     }
 }
 
-/** Planet accent colors (banner palette). */
 internal val BannerProteinColor = Color(0xFFEF9A9A)
 internal val BannerCarbsColor = Color(0xFF80CBC4)
 internal val BannerFatsColor = Color(0xFFFFCC80)

@@ -9,4 +9,9 @@ data class LoadingAnimationScope(
     val label: String? = null,
     /** Cycling caption lines; falls back to the animation's defaults when empty. */
     val captions: List<String> = emptyList(),
+    /**
+     * Playback multiplier from press-and-hold on the instrument card.
+     * `1f` = natural tempo; higher values speed the animation.
+     */
+    val speedMultiplier: Float = 1f,
 )

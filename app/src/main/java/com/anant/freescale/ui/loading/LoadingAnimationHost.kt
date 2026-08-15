@@ -1,15 +1,8 @@
 package com.anant.freescale.ui.loading
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,7 +18,9 @@ import com.anant.freescale.ui.loading.animations.measuringLabel
 
 /**
  * Shows a wait animation for [slot] according to [animationChoice]
- * (`off` / `random` / animation id). Off → spinner with status text.
+ * (`off` / `random` / animation id). Off → status text only on the card.
+ *
+ * Callers should size the host to the instrument card (`fillMaxSize()`).
  */
 @Composable
 fun LoadingAnimationHost(
@@ -34,13 +29,14 @@ fun LoadingAnimationHost(
     modifier: Modifier = Modifier,
     label: String? = null,
     captions: List<String>? = null,
+    speedMultiplier: Float = 1f,
 ) {
     val animation = remember(slot, animationChoice) {
         LoadingAnimationRegistry.resolve(slot, animationChoice)
     }
 
     if (animation == null) {
-        MeasuringSpinnerBanner(
+        MeasuringSpinnerCard(
             label = label,
             modifier = modifier,
         )
@@ -57,46 +53,32 @@ fun LoadingAnimationHost(
             modifier = modifier,
             label = label,
             captions = resolvedCaptions,
+            speedMultiplier = speedMultiplier,
         ),
     )
 }
 
 @Composable
-private fun MeasuringSpinnerBanner(
+private fun MeasuringSpinnerCard(
     label: String?,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+    Box(
+        modifier = modifier.fillMaxSize(),
     ) {
-        Row(
+        Text(
+            text = measuringLabel(label),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 2.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier
-                .fillMaxWidth()
-                .height(82.dp)
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(
-                text = measuringLabel(label),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 2.sp,
-                    fontWeight = FontWeight.Bold,
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            CircularProgressIndicator(
-                modifier = Modifier.size(28.dp),
-                strokeWidth = 3.dp,
-            )
-        }
+                .align(Alignment.BottomStart)
+                .padding(20.dp),
+        )
     }
 }

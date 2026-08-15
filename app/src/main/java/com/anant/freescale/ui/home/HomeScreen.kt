@@ -48,7 +48,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MonitorWeight
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearWavyProgressIndicator
@@ -59,7 +58,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,7 +87,11 @@ import com.anant.freescale.data.MeasurePhase
 import com.anant.freescale.ui.MeasurementDetail
 import com.anant.freescale.ui.loading.LoadingAnimChoice
 import com.anant.freescale.ui.loading.LoadingAnimationHost
+import com.anant.freescale.ui.loading.LoadingAnimationRegistry
 import com.anant.freescale.ui.loading.LoadingAnimationSlot
+import com.anant.freescale.ui.loading.LoadingHoldBoostMultiplier
+import com.anant.freescale.ui.loading.loadingHoldToBoost
+import com.anant.freescale.ui.loading.animations.TirangaChakraNavy
 import com.anant.freescale.ui.theme.MetricValueStyle
 import com.anant.freescale.ui.theme.PlexMonoFamily
 import com.anant.freescale.ui.theme.ReadoutStyle
@@ -552,25 +557,72 @@ private fun InstrumentReadout(
             (fadeOut(motion.fastEffectsSpec()) +
                 slideOutVertically(motion.fastSpatialSpec()) { -it / 2 })
     }
-    val progressEnter = if (reduceAnimations) EnterTransition.None else {
-        fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.7f)
-    }
-    val progressExit = if (reduceAnimations) ExitTransition.None else {
-        fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.7f)
-    }
     val barEnter = if (reduceAnimations) EnterTransition.None else fadeIn(motion.defaultEffectsSpec())
     val barExit = if (reduceAnimations) ExitTransition.None else fadeOut(motion.fastEffectsSpec())
     val bannerEnter = if (reduceAnimations) EnterTransition.None else {
-        fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it / 3 }
+        fadeIn(motion.defaultEffectsSpec())
     }
     val bannerExit = if (reduceAnimations) ExitTransition.None else {
-        fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { it / 3 }
+        fadeOut(motion.fastEffectsSpec())
+    }
+
+    val activeAnimationChoice = remember(showMeasuringBanner, readingAnimationChoice) {
+        if (!showMeasuringBanner) {
+            readingAnimationChoice
+        } else {
+            LoadingAnimationRegistry.resolve(
+                LoadingAnimationSlot.READING,
+                readingAnimationChoice,
+            )?.id ?: LoadingAnimChoice.OFF
+        }
+    }
+    val lightAnimContent = remember(activeAnimationChoice, showMeasuringBanner) {
+        if (!showMeasuringBanner) {
+            true
+        } else when (activeAnimationChoice) {
+            LoadingAnimChoice.OFF -> false // theme surface under the spinner
+            else -> LoadingAnimationRegistry.byId(activeAnimationChoice)?.lightContent != false
+        }
+    }
+    val usingThemeSurface = !showMeasuringBanner || activeAnimationChoice == LoadingAnimChoice.OFF
+    var touchSpeedMultiplier by remember { mutableFloatStateOf(1f) }
+    // Reset boost when the measuring card dismisses.
+    LaunchedEffect(showMeasuringBanner) {
+        if (!showMeasuringBanner) touchSpeedMultiplier = 1f
+    }
+    val readoutInk = when {
+        usingThemeSurface -> scheme.onPrimaryContainer
+        lightAnimContent -> Color.White
+        else -> TirangaChakraNavy
+    }
+    val headlineAccent = when {
+        usingThemeSurface -> when (phase) {
+            MeasurePhase.MeasuringBia, MeasurePhase.WeightStable -> scheme.tertiary
+            else -> scheme.primary
+        }
+        lightAnimContent -> when (phase) {
+            MeasurePhase.MeasuringBia, MeasurePhase.WeightStable -> Color(0xFF80CBC4)
+            else -> Color(0xFFFFCC80)
+        }
+        else -> TirangaChakraNavy
+    }
+    val tickAccent = when {
+        usingThemeSurface -> when (phase) {
+            MeasurePhase.WeightStable, MeasurePhase.MeasuringBia -> scheme.tertiary
+            MeasurePhase.Weighing -> scheme.primary.copy(alpha = 0.75f)
+            else -> scheme.primary.copy(alpha = 0.55f)
+        }
+        lightAnimContent -> when (phase) {
+            MeasurePhase.WeightStable, MeasurePhase.MeasuringBia -> Color(0xFF80CBC4)
+            else -> Color.White.copy(alpha = 0.55f)
+        }
+        else -> TirangaChakraNavy.copy(alpha = 0.55f)
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (showMeasuringBanner) 440.dp else 340.dp)
+            .height(360.dp)
             .graphicsLayer {
                 scaleX = panelScale
                 scaleY = panelScale
@@ -582,6 +634,34 @@ private fun InstrumentReadout(
                 ),
             ),
     ) {
+        AnimatedVisibility(
+            visible = showMeasuringBanner,
+            enter = bannerEnter,
+            exit = bannerExit,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            LoadingAnimationHost(
+                slot = LoadingAnimationSlot.READING,
+                animationChoice = activeAnimationChoice,
+                modifier = Modifier.fillMaxSize(),
+                label = if (forceShowLoadingAnimations && !measuringActive) {
+                    "PREVIEW"
+                } else {
+                    headline
+                },
+                captions = if (forceShowLoadingAnimations && !measuringActive) {
+                    listOf(
+                        "developer preview…",
+                        "force-show enabled…",
+                        "weigh in to see live…",
+                    )
+                } else {
+                    measuringBannerCaptions(phase)
+                },
+                speedMultiplier = touchSpeedMultiplier,
+            )
+        }
+
         if (!showMeasuringBanner) {
             Box(
                 modifier = Modifier
@@ -612,47 +692,43 @@ private fun InstrumentReadout(
                 .graphicsLayer { translationY = -parallaxFgY }
                 .padding(24.dp)
                 .padding(top = 8.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = if (showMeasuringBanner) {
+                Arrangement.Top
+            } else {
+                Arrangement.SpaceBetween
+            },
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AnimatedContent(
-                    targetState = headline,
-                    transitionSpec = { contentSwap },
-                    label = "phaseHeadline",
-                ) { text ->
-                    Text(
-                        text = text,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (phase) {
-                            MeasurePhase.MeasuringBia -> scheme.tertiary
-                            MeasurePhase.WeightStable -> scheme.tertiary
-                            else -> scheme.primary
-                        },
-                        letterSpacing = 2.sp,
-                    )
-                }
+            AnimatedContent(
+                targetState = if (showMeasuringBanner) "CRAFTED IN INDIA" else headline,
+                transitionSpec = { contentSwap },
+                label = "phaseHeadline",
+            ) { text ->
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = headlineAccent,
+                    letterSpacing = 2.sp,
+                )
+            }
 
-                AnimatedVisibility(
-                    visible = (live ?: 0f) > 10f &&
-                        (phase == MeasurePhase.Weighing ||
-                            phase == MeasurePhase.WeightStable ||
-                            phase == MeasurePhase.MeasuringBia),
-                    enter = progressEnter,
-                    exit = progressExit,
-                ) {
-                    PhaseProgress(phase = phase, reduceAnimations = reduceAnimations)
-                }
+            if (showMeasuringBanner) {
+                Spacer(modifier = Modifier.height(14.dp))
             }
 
             MeasurementModeStrip(
                 phase = phase,
                 liveWeightKg = live,
                 reduceAnimations = reduceAnimations,
+                contentInk = when {
+                    usingThemeSurface -> null
+                    lightAnimContent -> Color.White
+                    else -> TirangaChakraNavy
+                },
             )
+
+            if (showMeasuringBanner) {
+                Spacer(modifier = Modifier.height(28.dp))
+            }
 
             Column {
                 Row(
@@ -666,14 +742,14 @@ private fun InstrumentReadout(
                             "- / -"
                         },
                         style = ReadoutStyle.copy(
-                            color = scheme.onPrimaryContainer,
+                            color = readoutInk,
                             fontSize = if (hasWeight) 64.sp else 56.sp,
                         ),
                     )
                     Text(
                         text = "kg",
                         style = ReadoutUnitStyle.copy(
-                            color = scheme.onPrimaryContainer.copy(alpha = 0.7f),
+                            color = readoutInk.copy(alpha = 0.7f),
                         ),
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
@@ -683,12 +759,7 @@ private fun InstrumentReadout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp),
-                    accent = when (phase) {
-                        MeasurePhase.WeightStable -> scheme.tertiary
-                        MeasurePhase.MeasuringBia -> scheme.tertiary
-                        MeasurePhase.Weighing -> scheme.primary.copy(alpha = 0.75f)
-                        else -> scheme.primary.copy(alpha = 0.55f)
-                    },
+                    accent = tickAccent,
                 )
 
                 AnimatedVisibility(
@@ -704,41 +775,31 @@ private fun InstrumentReadout(
                             .height(10.dp),
                         amplitude = if (phase == MeasurePhase.MeasuringBia) 1f else 0.35f,
                         wavelength = if (phase == MeasurePhase.MeasuringBia) 28.dp else 40.dp,
-                        color = if (phase == MeasurePhase.MeasuringBia) {
-                            scheme.tertiary
+                        color = if (usingThemeSurface) {
+                            if (phase == MeasurePhase.MeasuringBia) {
+                                scheme.tertiary
+                            } else {
+                                scheme.primary
+                            }
+                        } else if (lightAnimContent) {
+                            if (phase == MeasurePhase.MeasuringBia) {
+                                Color(0xFF80CBC4)
+                            } else {
+                                Color(0xFFFFCC80)
+                            }
+                        } else if (phase == MeasurePhase.MeasuringBia) {
+                            TirangaChakraNavy
                         } else {
-                            scheme.primary
+                            TirangaChakraNavy.copy(alpha = 0.75f)
                         },
                     )
                 }
             }
 
-            AnimatedVisibility(
-                visible = showMeasuringBanner,
-                enter = bannerEnter,
-                exit = bannerExit,
-            ) {
-                LoadingAnimationHost(
-                    slot = LoadingAnimationSlot.READING,
-                    animationChoice = readingAnimationChoice,
-                    label = if (forceShowLoadingAnimations && !measuringActive) {
-                        "PREVIEW"
-                    } else {
-                        headline
-                    },
-                    captions = if (forceShowLoadingAnimations && !measuringActive) {
-                        listOf(
-                            "developer preview…",
-                            "force-show enabled…",
-                            "weigh in to see live…",
-                        )
-                    } else {
-                        measuringBannerCaptions(phase)
-                    },
-                )
-            }
-
-            if (!showMeasuringBanner) {
+            if (showMeasuringBanner) {
+                // Reserve the bottom caption shelf drawn by the animation.
+                Spacer(modifier = Modifier.weight(1f))
+            } else {
                 AnimatedContent(
                     targetState = status,
                     transitionSpec = { captionSwap },
@@ -753,6 +814,21 @@ private fun InstrumentReadout(
                     )
                 }
             }
+        }
+
+        // Press-and-hold only: sits above chrome so the animation receives the hold.
+        if (showMeasuringBanner && activeAnimationChoice != LoadingAnimChoice.OFF) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .loadingHoldToBoost { boosting ->
+                        touchSpeedMultiplier = if (boosting) {
+                            LoadingHoldBoostMultiplier
+                        } else {
+                            1f
+                        }
+                    },
+            )
         }
     }
 }
@@ -786,6 +862,7 @@ private fun MeasurementModeStrip(
     phase: MeasurePhase,
     liveWeightKg: Float?,
     reduceAnimations: Boolean,
+    contentInk: Color? = null,
 ) {
     val connectedReady = phase == MeasurePhase.Ready ||
         phase == MeasurePhase.Armed ||
@@ -800,10 +877,11 @@ private fun MeasurementModeStrip(
         exit = if (reduceAnimations) ExitTransition.None else fadeOut() + slideOutVertically { -it / 2 },
     ) {
         val weightState = if (steppedOn) ModeChipState.Active else ModeChipState.Standby
-        val biaState = when {
-            phase == MeasurePhase.MeasuringBia -> ModeChipState.Active
-            steppedOn -> ModeChipState.Active
-            else -> ModeChipState.Standby
+        // Only go green when BIA packets confirm the user is holding the bars.
+        val biaState = if (phase == MeasurePhase.MeasuringBia) {
+            ModeChipState.Active
+        } else {
+            ModeChipState.Standby
         }
 
         Row(
@@ -824,6 +902,7 @@ private fun MeasurementModeStrip(
                 },
                 state = weightState,
                 reduceAnimations = reduceAnimations,
+                contentInk = contentInk,
             )
             ModeChip(
                 modifier = Modifier.weight(1f),
@@ -837,6 +916,7 @@ private fun MeasurementModeStrip(
                 },
                 state = biaState,
                 reduceAnimations = reduceAnimations,
+                contentInk = contentInk,
             )
         }
     }
@@ -850,6 +930,7 @@ private fun ModeChip(
     detail: String,
     state: ModeChipState,
     reduceAnimations: Boolean,
+    contentInk: Color? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     val accent = when (state) {
@@ -868,9 +949,9 @@ private fun ModeChip(
     )
     val glow = if (state == ModeChipState.Active && !reduceAnimations) pulse else 1f
 
-    val container = accent.copy(alpha = if (state == ModeChipState.Active) 0.22f else 0.14f)
-    val content = scheme.onPrimaryContainer.copy(
-        alpha = if (state == ModeChipState.Active) 1f else 0.85f,
+    val container = accent.copy(alpha = if (state == ModeChipState.Active) 0.28f else 0.18f)
+    val content = (contentInk ?: scheme.onPrimaryContainer).copy(
+        alpha = if (state == ModeChipState.Active) 1f else 0.88f,
     )
 
     Row(
@@ -910,52 +991,6 @@ private fun ModeChip(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-    }
-}
-
-@Composable
-private fun PhaseProgress(phase: MeasurePhase, reduceAnimations: Boolean) {
-    val scheme = MaterialTheme.colorScheme
-    if (reduceAnimations) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(
-                    when (phase) {
-                        MeasurePhase.MeasuringBia -> scheme.tertiary
-                        else -> scheme.primary
-                    },
-                ),
-        )
-        return
-    }
-    when (phase) {
-        MeasurePhase.MeasuringBia -> {
-            CircularWavyProgressIndicator(
-                modifier = Modifier.size(36.dp),
-                color = scheme.tertiary,
-                amplitude = 1f,
-                wavelength = 18.dp,
-            )
-        }
-        MeasurePhase.WeightStable -> {
-            CircularWavyProgressIndicator(
-                modifier = Modifier.size(36.dp),
-                color = scheme.primary,
-                amplitude = 0.45f,
-                wavelength = 28.dp,
-            )
-        }
-        MeasurePhase.Weighing, MeasurePhase.Armed -> {
-            CircularWavyProgressIndicator(
-                modifier = Modifier.size(36.dp),
-                color = scheme.primary,
-                amplitude = 0.55f,
-                wavelength = 24.dp,
-            )
-        }
-        else -> Unit
     }
 }
 

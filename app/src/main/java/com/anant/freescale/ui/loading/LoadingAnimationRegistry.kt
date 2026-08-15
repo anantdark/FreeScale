@@ -1,7 +1,5 @@
 package com.anant.freescale.ui.loading
 
-import com.anant.freescale.ui.loading.animations.DnaHelixHorizontalLoadingAnimation
-import com.anant.freescale.ui.loading.animations.DnaHelixLoadingAnimation
 import com.anant.freescale.ui.loading.animations.SolarSystemLoadingAnimation
 import com.anant.freescale.ui.loading.animations.TirangaLoadingAnimation
 import kotlin.random.Random
@@ -14,8 +12,6 @@ object LoadingAnimationRegistry {
     val all: List<LoadingAnimation> = listOf(
         SolarSystemLoadingAnimation,
         TirangaLoadingAnimation,
-        DnaHelixLoadingAnimation,
-        DnaHelixHorizontalLoadingAnimation,
     )
 
     fun forSlot(slot: LoadingAnimationSlot): List<LoadingAnimation> =

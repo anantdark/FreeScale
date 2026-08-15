@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -215,6 +216,163 @@ private fun DrawScope.drawTirangaColumnBands(
         topLeft = Offset(x, y2),
         size = Size(colW, y3 - y2)
     )
+}
+
+/**
+ * Reading-card tiranga: continuous waving cloth (not vertical bars).
+ * Seams are smooth paths that travel with the wind; bands fill as solid
+ * flag colours with soft edge blends.
+ */
+internal fun DrawScope.drawTirangaCardFabric(
+    timeMs: Double,
+    columns: Int = 96,
+    seamWobbleScale: Float = 1f,
+) {
+    val W = size.width
+    val H = size.height
+    val t = timeMs
+    val samples = columns.coerceIn(48, 160)
+
+    // Traveling wind: multiple waves at irrational speed ratios so it never loops cleanly.
+    val gust = 0.85f + 0.22f * (
+        fabricNoise(t * 0.00017, 0.4) * 0.5f +
+            fabricNoise(t * 0.00029, 2.1) * 0.35f +
+            fabricNoise(t * 0.00043, 5.5) * 0.15f
+        )
+    val amp = H * 0.070f * seamWobbleScale * gust
+
+    fun saffronSeamY(nx: Float): Float {
+        val travel =
+            sin(nx * PI * 1.7 + t * 0.00155).toFloat() * 0.38f +
+                sin(nx * PI * 2.85 - t * 0.00105 + 0.9).toFloat() * 0.28f +
+                sin(nx * PI * 4.4 + t * 0.00072 + 2.1).toFloat() * 0.18f +
+                fabricNoise(t * 0.00021 + nx * 1.3, 7.2) * 0.16f
+        return (0.333f + travel * (amp / H)).coerceIn(0.24f, 0.42f) * H
+    }
+
+    fun greenSeamY(nx: Float): Float {
+        // Slightly delayed / different wavelengths — cloth has thickness & lag.
+        val travel =
+            sin(nx * PI * 1.55 + t * 0.00135 + 1.2).toFloat() * 0.36f +
+                sin(nx * PI * 3.1 - t * 0.00095 + 0.4).toFloat() * 0.30f +
+                sin(nx * PI * 5.0 + t * 0.00061 + 2.8).toFloat() * 0.18f +
+                fabricNoise(t * 0.00019 + nx * 1.1, 9.8) * 0.16f
+        val y = (0.667f + travel * (amp / H)).coerceIn(0.58f, 0.78f) * H
+        val saffron = saffronSeamY(nx)
+        return y.coerceAtLeast(saffron + H * 0.18f)
+    }
+
+    // Build seam polylines once.
+    val saffronYs = FloatArray(samples + 1)
+    val greenYs = FloatArray(samples + 1)
+    for (i in 0..samples) {
+        val nx = i / samples.toFloat()
+        saffronYs[i] = saffronSeamY(nx)
+        greenYs[i] = greenSeamY(nx)
+    }
+
+    fun seamPath(fromTop: Boolean, seamYs: FloatArray): Path {
+        val path = Path()
+        if (fromTop) {
+            path.moveTo(0f, 0f)
+            path.lineTo(W, 0f)
+            for (i in samples downTo 0) {
+                val x = (i / samples.toFloat()) * W
+                path.lineTo(x, seamYs[i])
+            }
+            path.close()
+        } else {
+            path.moveTo(0f, H)
+            path.lineTo(W, H)
+            for (i in samples downTo 0) {
+                val x = (i / samples.toFloat()) * W
+                path.lineTo(x, seamYs[i])
+            }
+            path.close()
+        }
+        return path
+    }
+
+    fun bandBetween(topYs: FloatArray, bottomYs: FloatArray): Path {
+        val path = Path()
+        path.moveTo(0f, topYs[0])
+        for (i in 1..samples) {
+            path.lineTo((i / samples.toFloat()) * W, topYs[i])
+        }
+        for (i in samples downTo 0) {
+            path.lineTo((i / samples.toFloat()) * W, bottomYs[i])
+        }
+        path.close()
+        return path
+    }
+
+    // Saffron (top)
+    drawPath(
+        path = seamPath(fromTop = true, seamYs = saffronYs),
+        brush = Brush.verticalGradient(
+            colors = listOf(
+                flowingBandColor(TirangaSaffron, 0f, 1.02f),
+                TirangaSaffron,
+                lerpColor(TirangaSaffron, TirangaFlagWhite, 0.35f),
+            ),
+        ),
+    )
+
+    // White (middle)
+    drawPath(
+        path = bandBetween(saffronYs, greenYs),
+        brush = Brush.verticalGradient(
+            colors = listOf(
+                lerpColor(TirangaSaffron, TirangaFlagWhite, 0.65f),
+                TirangaFlagWhite,
+                lerpColor(TirangaFlagWhite, TirangaIndiaGreen, 0.25f),
+            ),
+        ),
+    )
+
+    // Green (bottom)
+    drawPath(
+        path = seamPath(fromTop = false, seamYs = greenYs),
+        brush = Brush.verticalGradient(
+            colors = listOf(
+                lerpColor(TirangaFlagWhite, TirangaIndiaGreen, 0.40f),
+                TirangaIndiaGreen,
+                TirangaIndiaGreen.copy(alpha = 0.95f),
+            ),
+        ),
+    )
+
+    // Traveling fold highlights — crest strokes that move with the wind.
+    val foldCount = 4
+    for (f in 0 until foldCount) {
+        val phase = t * (0.00090 + f * 0.00013) + f * 1.9
+        var prev: Offset? = null
+        for (i in 0..samples) {
+            val nx = i / samples.toFloat()
+            val x = nx * W
+            val fold = sin(nx * PI * (1.4 + f * 0.4) - phase).toFloat()
+            if (fold < 0.25f) {
+                prev = null
+                continue
+            }
+            val yTop = saffronYs[i]
+            val yBot = greenYs[i]
+            val y = yTop + (yBot - yTop) * (0.30f + 0.35f * ((f % 3) / 2f))
+            val cur = Offset(x, y)
+            val p = prev
+            if (p != null) {
+                val lift = ((fold - 0.25f) / 0.75f).coerceIn(0f, 1f)
+                drawLine(
+                    color = Color.White.copy(alpha = 0.12f * gust * lift),
+                    start = p,
+                    end = cur,
+                    strokeWidth = (1.8f + lift * 1.6f).dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+            prev = cur
+        }
+    }
 }
 
 /** Continuous ≈[-1, 1] field from stacked incommensurate sines. */
