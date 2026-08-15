@@ -877,8 +877,10 @@ private fun MeasurementModeStrip(
         exit = if (reduceAnimations) ExitTransition.None else fadeOut() + slideOutVertically { -it / 2 },
     ) {
         val weightState = if (steppedOn) ModeChipState.Active else ModeChipState.Standby
-        // Only go green when BIA packets confirm the user is holding the bars.
-        val biaState = if (phase == MeasurePhase.MeasuringBia) {
+        // No realtime grip bit from the scale; go green once weight is locked.
+        val biaState = if (
+            phase == MeasurePhase.WeightStable || phase == MeasurePhase.MeasuringBia
+        ) {
             ModeChipState.Active
         } else {
             ModeChipState.Standby
