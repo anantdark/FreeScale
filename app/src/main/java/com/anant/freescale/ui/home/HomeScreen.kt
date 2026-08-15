@@ -47,6 +47,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MonitorWeight
 import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -98,6 +99,34 @@ import com.anant.freescale.ui.theme.ReadoutStyle
 import com.anant.freescale.ui.theme.ReadoutUnitStyle
 import com.anant.freescale.util.BleLogger
 import java.util.Locale
+
+@Composable
+private fun WeightOnlyConfirmDialog(
+    weightKg: Float,
+    onConfirm: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDiscard,
+        title = { Text("Log weight-only reading?") },
+        text = {
+            Text(
+                "No handlebar / BIA data this time. " +
+                    "Save ${"%.2f".format(Locale.US, weightKg)} kg, or discard it?",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Log reading")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDiscard) {
+                Text("Discard")
+            }
+        },
+    )
+}
 
 @Composable
 fun HomeScreen(
@@ -204,6 +233,14 @@ fun HomeScreen(
             scheme.background,
         ),
     )
+
+    state.pendingWeightOnly?.let { pending ->
+        WeightOnlyConfirmDialog(
+            weightKg = pending.weight,
+            onConfirm = vm::confirmWeightOnly,
+            onDiscard = vm::discardWeightOnly,
+        )
+    }
 
     val softEnter = if (reduceAnimations) {
         EnterTransition.None
@@ -852,7 +889,16 @@ private fun measuringBannerCaptions(phase: MeasurePhase): List<String> = when (p
     else -> emptyList()
 }
 
-private enum class ModeChipState { Standby, Active }
+/** Chip container: yellow standby vs green engaged. */
+private enum class ModeBoxState { Standby, Active }
+
+/**
+ * Status dot independent of the box:
+ * - [Idle] yellow solid (not started)
+ * - [Pending] yellow blinking (in progress)
+ * - [Done] green solid (locked / data received)
+ */
+private enum class ModeDotState { Idle, Pending, Done }
 
 private val ModeStandbyYellow = Color(0xFFEAB308)
 private val ModeActiveGreen = Color(0xFF22C55E)
@@ -870,20 +916,26 @@ private fun MeasurementModeStrip(
         phase == MeasurePhase.WeightStable ||
         phase == MeasurePhase.MeasuringBia
     val steppedOn = (liveWeightKg ?: 0f) > 10f
+    val weightLocked = phase == MeasurePhase.WeightStable ||
+        phase == MeasurePhase.MeasuringBia
 
     AnimatedVisibility(
         visible = connectedReady,
         enter = if (reduceAnimations) EnterTransition.None else fadeIn() + slideInVertically { -it / 2 },
         exit = if (reduceAnimations) ExitTransition.None else fadeOut() + slideOutVertically { -it / 2 },
     ) {
-        val weightState = if (steppedOn) ModeChipState.Active else ModeChipState.Standby
-        // No realtime grip bit from the scale; go green once weight is locked.
-        val biaState = if (
-            phase == MeasurePhase.WeightStable || phase == MeasurePhase.MeasuringBia
-        ) {
-            ModeChipState.Active
-        } else {
-            ModeChipState.Standby
+        val weightBox = if (steppedOn) ModeBoxState.Active else ModeBoxState.Standby
+        val weightDot = when {
+            weightLocked -> ModeDotState.Done
+            steppedOn -> ModeDotState.Pending
+            else -> ModeDotState.Idle
+        }
+        // No realtime grip bit — box goes green at weight lock; dot waits for BIA packets.
+        val biaBox = if (weightLocked) ModeBoxState.Active else ModeBoxState.Standby
+        val biaDot = when (phase) {
+            MeasurePhase.MeasuringBia -> ModeDotState.Done
+            MeasurePhase.WeightStable -> ModeDotState.Pending
+            else -> ModeDotState.Idle
         }
 
         Row(
@@ -898,11 +950,11 @@ private fun MeasurementModeStrip(
                 label = "Weight",
                 detail = when {
                     !steppedOn -> "Step on"
-                    phase == MeasurePhase.WeightStable ||
-                        phase == MeasurePhase.MeasuringBia -> "Locked"
+                    weightLocked -> "Locked"
                     else -> "Measuring"
                 },
-                state = weightState,
+                boxState = weightBox,
+                dotState = weightDot,
                 reduceAnimations = reduceAnimations,
                 contentInk = contentInk,
             )
@@ -912,11 +964,12 @@ private fun MeasurementModeStrip(
                 label = "Handlebars",
                 detail = when {
                     phase == MeasurePhase.MeasuringBia -> "BIA reading"
-                    steppedOn && phase == MeasurePhase.WeightStable -> "Grab bars"
+                    phase == MeasurePhase.WeightStable -> "Grab bars"
                     steppedOn -> "Hold for BIA"
                     else -> "Stand by"
                 },
-                state = biaState,
+                boxState = biaBox,
+                dotState = biaDot,
                 reduceAnimations = reduceAnimations,
                 contentInk = contentInk,
             )
@@ -930,30 +983,35 @@ private fun ModeChip(
     icon: ImageVector,
     label: String,
     detail: String,
-    state: ModeChipState,
+    boxState: ModeBoxState,
+    dotState: ModeDotState,
     reduceAnimations: Boolean,
     contentInk: Color? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val accent = when (state) {
-        ModeChipState.Active -> ModeActiveGreen
-        ModeChipState.Standby -> ModeStandbyYellow
+    val boxAccent = when (boxState) {
+        ModeBoxState.Active -> ModeActiveGreen
+        ModeBoxState.Standby -> ModeStandbyYellow
     }
-    val infinite = rememberInfiniteTransition(label = "modeGlow")
+    val dotColor = when (dotState) {
+        ModeDotState.Done -> ModeActiveGreen
+        ModeDotState.Idle, ModeDotState.Pending -> ModeStandbyYellow
+    }
+    val infinite = rememberInfiniteTransition(label = "modeDotPulse")
     val pulse by infinite.animateFloat(
-        initialValue = 0.45f,
+        initialValue = 0.35f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(700),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "modeGlowAlpha",
+        label = "modeDotAlpha",
     )
-    val glow = if (state == ModeChipState.Active && !reduceAnimations) pulse else 1f
+    val glow = if (dotState == ModeDotState.Pending && !reduceAnimations) pulse else 1f
 
-    val container = accent.copy(alpha = if (state == ModeChipState.Active) 0.28f else 0.18f)
+    val container = boxAccent.copy(alpha = if (boxState == ModeBoxState.Active) 0.28f else 0.18f)
     val content = (contentInk ?: scheme.onPrimaryContainer).copy(
-        alpha = if (state == ModeChipState.Active) 1f else 0.88f,
+        alpha = if (boxState == ModeBoxState.Active) 1f else 0.88f,
     )
 
     Row(
@@ -968,7 +1026,7 @@ private fun ModeChip(
             modifier = Modifier
                 .size(10.dp)
                 .clip(CircleShape)
-                .background(accent.copy(alpha = glow)),
+                .background(dotColor.copy(alpha = glow)),
         )
         Icon(
             imageVector = icon,

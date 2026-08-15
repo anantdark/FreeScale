@@ -20,19 +20,29 @@ import com.anant.freescale.data.GenderType
 import com.anant.freescale.data.MeasurePhase
 import com.anant.freescale.data.ScaleMeasurement
 import com.anant.freescale.data.ScaleUser
+import com.anant.freescale.data.backup.MeasurementBackupJson
 import com.anant.freescale.data.db.MeasurementRepository
 import com.anant.freescale.data.remote.UpdateCheckResult
 import com.anant.freescale.data.remote.UpdateChecker
 import com.anant.freescale.scales.DrTrustSSW532Handler
 import com.anant.freescale.ui.loading.LoadingAnimChoice
+import com.anant.freescale.ui.progress.PeriodUnit
+import com.anant.freescale.ui.progress.ProgressMetric
+import com.anant.freescale.ui.progress.ProgressPeriod
 import com.anant.freescale.util.BleLogger
+import android.net.Uri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,6 +68,11 @@ data class UiState(
     /** Last completed reading for Home; survives reconnect mid-session. */
     val lastMeasurement: ScaleMeasurement? = null,
     /**
+     * Weight-only reading awaiting user confirm before persist.
+     * Null when idle or after a full BIA save.
+     */
+    val pendingWeightOnly: ScaleMeasurement? = null,
+    /**
      * Body-comp snapshot for Health bar this process only.
      * Cleared when the app process dies; set again on the next BIA reading.
      */
@@ -75,6 +90,29 @@ data class UpdateUiState(
     val statusIsError: Boolean = false,
 )
 
+/** Progress tab: period window + selected chart metric. */
+data class ProgressUiState(
+    val periodUnit: PeriodUnit = PeriodUnit.Week,
+    val periodAnchor: LocalDate = LocalDate.now(),
+    val metric: ProgressMetric = ProgressMetric.Weight,
+) {
+    val period: ProgressPeriod
+        get() = ProgressPeriod(unit = periodUnit, anchor = periodAnchor)
+}
+
+enum class BackupImportMode {
+    /** Keep existing readings; add only those with new timestamps. */
+    Merge,
+    /** Wipe local history, then load the backup. */
+    Replace,
+}
+
+data class BackupUiState(
+    val busy: Boolean = false,
+    val message: String? = null,
+    val isError: Boolean = false,
+)
+
 class MeasureViewModel(app: Application) : AndroidViewModel(app) {
     private val preferences = AppPreferences(app)
     private val measurements = MeasurementRepository(app)
@@ -85,6 +123,33 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _updateState = MutableStateFlow(UpdateUiState())
     val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
+
+    private val _progress = MutableStateFlow(ProgressUiState())
+    val progress: StateFlow<ProgressUiState> = _progress.asStateFlow()
+
+    private val _backupState = MutableStateFlow(BackupUiState())
+    val backupState: StateFlow<BackupUiState> = _backupState.asStateFlow()
+
+    val measurementHistory: StateFlow<List<ScaleMeasurement>> =
+        measurements.observeAllNewestFirst()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val measurementCount: StateFlow<Int> =
+        measurements.observeCount()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val periodReadings: StateFlow<List<ScaleMeasurement>> =
+        _progress
+            .map { it.period }
+            .distinctUntilChanged()
+            .flatMapLatest { period ->
+                measurements.observeInRange(
+                    fromEpochMs = period.startEpochMs(),
+                    toEpochMs = period.endExclusiveEpochMs(),
+                )
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val debugMode: StateFlow<Boolean> = preferences.debugMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -235,6 +300,154 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setForceShowLoadingAnimations(enabled: Boolean) {
         viewModelScope.launch { preferences.setForceShowLoadingAnimations(enabled) }
+    }
+
+    fun setProgressPeriodUnit(unit: PeriodUnit) {
+        _progress.update { it.copy(periodUnit = unit, periodAnchor = LocalDate.now()) }
+    }
+
+    fun setProgressMetric(metric: ProgressMetric) {
+        _progress.update { it.copy(metric = metric) }
+    }
+
+    fun goToPreviousProgressPeriod() {
+        _progress.update { state ->
+            val prev = state.period.previous()
+            state.copy(periodAnchor = prev.start)
+        }
+    }
+
+    fun goToNextProgressPeriod() {
+        _progress.update { state ->
+            if (!state.period.canGoNext()) return@update state
+            val next = state.period.next()
+            state.copy(periodAnchor = next.start)
+        }
+    }
+
+    fun dismissBackupMessage() {
+        _backupState.update { it.copy(message = null, isError = false) }
+    }
+
+    /** Write a FreeScale JSON backup to [uri] (SAF CreateDocument result). */
+    fun exportBackup(uri: Uri) {
+        if (_backupState.value.busy) return
+        viewModelScope.launch {
+            _backupState.update { BackupUiState(busy = true) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    val rows = measurements.getAllOldestFirst()
+                    val profile = preferences.userProfile.first()
+                    val json = MeasurementBackupJson.encode(rows, profile)
+                    app.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } ?: error("Could not open export file")
+                    rows.size
+                }
+            }
+            result.fold(
+                onSuccess = { count ->
+                    _backupState.update {
+                        BackupUiState(
+                            busy = false,
+                            message = "Exported $count reading${if (count == 1) "" else "s"}",
+                            isError = false,
+                        )
+                    }
+                    BleLogger.i("Backup export ok ($count readings)")
+                },
+                onFailure = { e ->
+                    _backupState.update {
+                        BackupUiState(
+                            busy = false,
+                            message = e.message ?: "Export failed",
+                            isError = true,
+                        )
+                    }
+                    BleLogger.e("Backup export failed", e)
+                },
+            )
+        }
+    }
+
+    /** Read a FreeScale JSON backup from [uri] and merge or replace local history. */
+    fun importBackup(uri: Uri, mode: BackupImportMode) {
+        if (_backupState.value.busy) return
+        viewModelScope.launch {
+            _backupState.update { BackupUiState(busy = true) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    val json = app.contentResolver.openInputStream(uri)?.use { input ->
+                        input.readBytes().toString(Charsets.UTF_8)
+                    } ?: error("Could not open backup file")
+                    val doc = MeasurementBackupJson.decode(json)
+                    val imported = when (mode) {
+                        BackupImportMode.Replace -> {
+                            measurements.deleteAll()
+                            measurements.insertAll(doc.measurements)
+                            doc.measurements.size
+                        }
+                        BackupImportMode.Merge -> {
+                            val existing = measurements.allRecordedAtEpochMs()
+                            val fresh = doc.measurements.filter { m ->
+                                val at = m.dateTime?.time ?: return@filter true
+                                at !in existing
+                            }
+                            measurements.insertAll(fresh)
+                            fresh.size
+                        }
+                    }
+                    doc.profile?.let { p ->
+                        preferences.setUserProfile(p.heightCm, p.ageYears, p.male)
+                    }
+                    val latest = measurements.latest()
+                    Triple(imported, doc.measurements.size, latest)
+                }
+            }
+            result.fold(
+                onSuccess = { (imported, totalInFile, latest) ->
+                    if (latest != null) {
+                        _ui.update {
+                            it.copy(
+                                lastMeasurement = latest,
+                                sessionBodyComp = if (latest.hasBodyComp) {
+                                    latest
+                                } else {
+                                    it.sessionBodyComp
+                                },
+                            )
+                        }
+                    } else if (mode == BackupImportMode.Replace) {
+                        _ui.update {
+                            it.copy(lastMeasurement = null, sessionBodyComp = null)
+                        }
+                    }
+                    val modeLabel = if (mode == BackupImportMode.Replace) "Replaced" else "Merged"
+                    _backupState.update {
+                        BackupUiState(
+                            busy = false,
+                            message = "$modeLabel $imported of $totalInFile reading" +
+                                "${if (totalInFile == 1) "" else "s"} from backup",
+                            isError = false,
+                        )
+                    }
+                    BleLogger.i("Backup import ok mode=$mode imported=$imported/$totalInFile")
+                },
+                onFailure = { e ->
+                    _backupState.update {
+                        BackupUiState(
+                            busy = false,
+                            message = e.message ?: "Import failed",
+                            isError = true,
+                        )
+                    }
+                    BleLogger.e("Backup import failed", e)
+                },
+            )
+        }
     }
 
     /**
@@ -473,22 +686,28 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     m
                 }
-                _ui.update {
-                    it.copy(
-                        measurement = stamped,
-                        lastMeasurement = stamped,
-                        sessionBodyComp = if (stamped.hasBodyComp) stamped else it.sessionBodyComp,
-                        status = "Measurement complete",
-                        measurePhase = MeasurePhase.Complete,
-                    )
-                }
-                viewModelScope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) { measurements.save(stamped) }
-                    }.onSuccess { id ->
-                        BleLogger.i("Saved measurement id=$id weight=${stamped.weight}")
-                    }.onFailure { t ->
-                        BleLogger.e("Failed to persist measurement", t)
+                if (stamped.hasBodyComp) {
+                    _ui.update {
+                        it.copy(
+                            measurement = stamped,
+                            lastMeasurement = stamped,
+                            pendingWeightOnly = null,
+                            sessionBodyComp = stamped,
+                            status = "Measurement complete",
+                            measurePhase = MeasurePhase.Complete,
+                        )
+                    }
+                    persistMeasurement(stamped)
+                } else {
+                    // Weight-only: show confirm dialog; do not persist yet.
+                    BleLogger.i("Weight-only pending confirm w=${stamped.weight}")
+                    _ui.update {
+                        it.copy(
+                            measurement = stamped,
+                            pendingWeightOnly = stamped,
+                            status = "Weight only — log this reading?",
+                            measurePhase = MeasurePhase.Complete,
+                        )
                     }
                 }
             },
@@ -508,6 +727,44 @@ class MeasureViewModel(app: Application) : AndroidViewModel(app) {
                 BleLogger.w("Start measurement but not connected")
                 _ui.update { it.copy(status = "Tap Connect first") }
             }
+    }
+
+    /** Persist a weight-only reading the user chose to keep. */
+    fun confirmWeightOnly() {
+        val pending = _ui.value.pendingWeightOnly ?: return
+        _ui.update {
+            it.copy(
+                lastMeasurement = pending,
+                pendingWeightOnly = null,
+                status = "Measurement complete",
+            )
+        }
+        persistMeasurement(pending)
+    }
+
+    /** Drop a weight-only reading without saving. */
+    fun discardWeightOnly() {
+        val pending = _ui.value.pendingWeightOnly ?: return
+        BleLogger.i("Discarded weight-only w=${pending.weight}")
+        _ui.update {
+            it.copy(
+                measurement = it.lastMeasurement,
+                pendingWeightOnly = null,
+                status = "Reading discarded",
+            )
+        }
+    }
+
+    private fun persistMeasurement(stamped: ScaleMeasurement) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { measurements.save(stamped) }
+            }.onSuccess { id ->
+                BleLogger.i("Saved measurement id=$id weight=${stamped.weight}")
+            }.onFailure { t ->
+                BleLogger.e("Failed to persist measurement", t)
+            }
+        }
     }
 
     fun disconnect() {

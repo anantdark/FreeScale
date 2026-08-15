@@ -117,9 +117,10 @@ fun FreeScaleApp(vm: MeasureViewModel) {
                     )
                 }
                 composable(FreeScaleDestination.Progress.route) {
-                    ProgressScreen()
+                    ProgressScreen(vm = vm)
                 }
                 composable(FreeScaleDestination.Settings.route) {
+                    val backupState by vm.backupState.collectAsStateWithLifecycle()
                     SettingsScreen(
                         heightCm = state.heightCm,
                         ageYears = state.ageYears,
@@ -148,6 +149,10 @@ fun FreeScaleApp(vm: MeasureViewModel) {
                         forceShowLoadingAnimations = forceShowLoadingAnimations,
                         onForceShowLoadingAnimationsChange = vm::setForceShowLoadingAnimations,
                         onHeartDoubleTapHeartbeat = vm::sendHeartbeatFromLoveTap,
+                        backupState = backupState,
+                        onExportBackup = vm::exportBackup,
+                        onImportBackup = vm::importBackup,
+                        onDismissBackupMessage = vm::dismissBackupMessage,
                     )
                 }
             }

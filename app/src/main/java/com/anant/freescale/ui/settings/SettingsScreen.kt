@@ -1,5 +1,7 @@
 package com.anant.freescale.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.ImageDecoder
 import android.graphics.drawable.Animatable
 import android.widget.ImageView
@@ -36,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -78,6 +82,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.anant.freescale.BackupImportMode
+import com.anant.freescale.BackupUiState
 import com.anant.freescale.BuildConfig
 import com.anant.freescale.R
 import com.anant.freescale.UpdateUiState
@@ -91,6 +97,8 @@ import com.anant.freescale.ui.loading.LoadingAnimationSlot
 import com.anant.freescale.ui.loading.LoadingHoldBoostMultiplier
 import com.anant.freescale.ui.loading.loadingHoldToBoost
 import kotlinx.coroutines.delay
+import java.time.LocalDate
+import android.net.Uri
 
 private const val DEVELOPER_UNLOCK_TAPS = 31
 private const val DEVELOPER_HINT_START = DEVELOPER_UNLOCK_TAPS - 5
@@ -124,6 +132,10 @@ fun SettingsScreen(
     forceShowLoadingAnimations: Boolean = false,
     onForceShowLoadingAnimationsChange: (Boolean) -> Unit = {},
     onHeartDoubleTapHeartbeat: () -> Unit = {},
+    backupState: BackupUiState = BackupUiState(),
+    onExportBackup: (Uri) -> Unit = {},
+    onImportBackup: (Uri, BackupImportMode) -> Unit = { _, _ -> },
+    onDismissBackupMessage: () -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
     var packageTapCount by remember { mutableIntStateOf(0) }
@@ -131,6 +143,23 @@ fun SettingsScreen(
     var confettiKey by remember { mutableIntStateOf(0) }
     var showConfetti by remember { mutableStateOf(false) }
     var showAnimationPreview by remember { mutableStateOf(false) }
+    var showImportChooser by remember { mutableStateOf(false) }
+    var showReplaceConfirm by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) onExportBackup(uri)
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            pendingImportUri = uri
+            showImportChooser = true
+        }
+    }
 
     LaunchedEffect(confettiKey) {
         if (confettiKey == 0) return@LaunchedEffect
@@ -228,6 +257,57 @@ fun SettingsScreen(
             description = "Metric (kg / cm). Imperial toggle arrives later.",
         ) {
             // Placeholder until imperial lands.
+        }
+
+        SettingsSection(
+            title = "Backup",
+            description = "Export or restore readings and profile as a JSON file on this device.",
+            initiallyExpanded = false,
+        ) {
+            OutlinedButton(
+                onClick = {
+                    val name = "FreeScale-backup-${LocalDate.now()}.json"
+                    exportLauncher.launch(name)
+                },
+                enabled = !backupState.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (backupState.busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("Working…")
+                } else {
+                    Icon(Icons.Filled.FileUpload, contentDescription = null)
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("Export JSON backup")
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                },
+                enabled = !backupState.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Filled.FileDownload, contentDescription = null)
+                Spacer(modifier = Modifier.size(8.dp))
+                Text("Import JSON backup")
+            }
+            backupState.message?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (backupState.isError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.clickable(onClick = onDismissBackupMessage),
+                )
+            }
         }
 
         SettingsSection(
@@ -473,6 +553,92 @@ fun SettingsScreen(
         AnimationPreviewDialog(
             animationChoice = readingAnimationChoice,
             onDismiss = { showAnimationPreview = false },
+        )
+    }
+
+    if (showImportChooser) {
+        AlertDialog(
+            onDismissRequest = {
+                showImportChooser = false
+                pendingImportUri = null
+            },
+            title = { Text("Import backup") },
+            text = {
+                Text(
+                    "Merge keeps your current readings and adds only new timestamps. " +
+                        "Replace deletes all local readings first, then loads the file.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val uri = pendingImportUri
+                        showImportChooser = false
+                        pendingImportUri = null
+                        if (uri != null) onImportBackup(uri, BackupImportMode.Merge)
+                    },
+                ) {
+                    Text("Merge")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            showImportChooser = false
+                            showReplaceConfirm = true
+                        },
+                    ) {
+                        Text("Replace…")
+                    }
+                    TextButton(
+                        onClick = {
+                            showImportChooser = false
+                            pendingImportUri = null
+                        },
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            },
+        )
+    }
+
+    if (showReplaceConfirm) {
+        AlertDialog(
+            onDismissRequest = {
+                showReplaceConfirm = false
+                pendingImportUri = null
+            },
+            title = { Text("Replace all readings?") },
+            text = {
+                Text(
+                    "This permanently deletes every reading on this phone, then imports " +
+                        "the backup. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val uri = pendingImportUri
+                        showReplaceConfirm = false
+                        pendingImportUri = null
+                        if (uri != null) onImportBackup(uri, BackupImportMode.Replace)
+                    },
+                ) {
+                    Text("Replace")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showReplaceConfirm = false
+                        pendingImportUri = null
+                    },
+                ) {
+                    Text("Cancel")
+                }
+            },
         )
     }
 }
