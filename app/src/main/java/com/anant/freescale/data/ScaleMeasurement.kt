@@ -12,7 +12,13 @@ data class SegmentMetrics(
 
 /**
  * Full open dump of one SSW532 measurement.
- * Composition derived with Chipsea/ICOMON WLA25 (same OEM family as FG2211WB).
+ *
+ * Body fat comes from the Sun 2003 fat-free-mass equation over the scale's
+ * whole-body channel A; every other metric is derived from fat-free mass by the
+ * Chipsea/ICOMON WLA25 chain. See `BodyCompositionBuilder`.
+ *
+ * The raw inputs ([channelAOhm], [zSegments], [pkt0Hex]…) are kept alongside the
+ * results so a stored row can be recomputed offline if the model changes.
  */
 data class ScaleMeasurement(
     var userId: Int = 1,

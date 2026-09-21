@@ -79,7 +79,7 @@ fun MeasurementDetail(
                     metricChange(m.bmi, it.bmi, MetricHigherIs.Worse)
                 },
             )
-            MetricRow("Ideal weight (Broca)", fmtKg(m.idealWeightKg))
+            MetricRow("Ideal weight", fmtKg(m.idealWeightKg))
             MetricRow(
                 "Obesity degree",
                 "${"%.1f".format(m.obesityDegree)}%",
@@ -191,7 +191,7 @@ fun MeasurementDetail(
 
             if (debugMode) {
                 SectionTitle("Impedance (raw from scale)")
-                MetricRow("Foot-path Z (Z3+Z4+Z5)", "${"%.2f".format(m.impedance)} Ω")
+                MetricRow("Whole-body R (model input)", "${"%.2f".format(m.impedance)} Ω")
                 MetricRow("H²/R coefficient", "%.4f".format(m.h2rCoeff))
                 MetricRow("pkt0 channel A", "${"%.2f".format(m.channelAOhm)} Ω")
                 MetricRow("pkt0 channel B", "${"%.2f".format(m.channelBOhm)} Ω")
@@ -203,7 +203,7 @@ fun MeasurementDetail(
                 }
 
                 if (m.wla25Inputs.size == 10) {
-                    SectionTitle("WLA25 input vector (10 Ω)")
+                    SectionTitle("Segmental input vector (10 Ω)")
                     val names = listOf(
                         "i0 Z3 trunk", "i1 Z1", "i2 Z2", "i3 Z4 R-leg", "i4 Z5 L-leg",
                         "i5 Z8", "i6 chB", "i7 chA", "i8 Z6", "i9 Z7",
@@ -219,8 +219,11 @@ fun MeasurementDetail(
                 HexBlock("FFB3 pkt2 (end)", m.pkt2Hex)
 
                 Text(
-                    "Primary algorithm: Chipsea/ICOMON WLA25 (same family as Fitdays / FG2211), " +
-                        "ported from sacoma-lib. Vendor app may still differ slightly if it uses a newer .so revision.",
+                    "Body fat comes from the Sun 2003 fat-free-mass equation over the scale's " +
+                        "whole-body channel A, calibrated to this hardware. Everything else is " +
+                        "derived from fat-free mass by the Chipsea/ICOMON WLA25 chain, which " +
+                        "matches the Dr. Trust app exactly. The per-segment rows are indicative " +
+                        "only — the segmental impedance slot order is unverified.",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 4.dp),
                 )

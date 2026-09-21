@@ -115,6 +115,12 @@ android {
         includeInApk = false
         includeInBundle = false
     }
+    testOptions {
+        unitTests {
+            // Stub android.util.Log & co. so plain-JVM tests can exercise code that logs.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 // Release APK: FreeScale-<versionName>.apk (not app-release.apk).

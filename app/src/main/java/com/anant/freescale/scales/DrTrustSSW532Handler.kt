@@ -293,7 +293,6 @@ class DrTrustSSW532Handler(
             age = user.age,
             gender = user.gender,
             wholeBodyOhm = wholeBodyZ,
-            trunkOhm = z3,
             segmentsOhm = zSegments,
             channelAOhm = channelAOhm,
             channelBOhm = channelBOhm,

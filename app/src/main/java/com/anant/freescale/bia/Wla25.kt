@@ -1,19 +1,65 @@
 package com.anant.freescale.bia
 
 import kotlin.math.abs
-import kotlin.math.truncate
 
 /**
- * Pure-Kotlin port of Chipsea / ICOMON `ICBodyFatAlgorithmWLA25::calc`.
+ * Chipsea / ICOMON **WLA25** body composition, as used by the Fitdays / ICOMON
+ * 8-electrode scale family that the Dr. Trust SSW532 (FG2211WB) belongs to.
  *
- * Source: [sacoma-lib](https://github.com/ynsgnr/sacoma-lib) `sacoma/wla25.py` (MIT),
- * a bit-exact reverse of the vendor library used by Fitdays / ICOMON 8-electrode scales.
- * Dr. Trust SSW532 (FG2211WB) is the same OEM family.
+ * Ported from `ICBodyFatAlgorithmWLA25::calc` in the vendor
+ * `libICBodyFatAlgorithms.so`, cross-checked against openScale's
+ * [`Wla25BodyComposition`](https://github.com/oliexdev/openScale/blob/master/android_app/app/src/main/java/com/health/openscale/core/bluetooth/libs/Wla25BodyComposition.kt)
+ * (GPL-3.0) and [sacoma-lib](https://github.com/ynsgnr/sacoma-lib) `sacoma/wla25.py`.
  *
- * Input: weight kg, height cm, sex (1=male, 0=female), age, peopleType (0=normal),
- * and **10** impedances in ohms (see [Ssw532ImpedanceMap]).
+ * ## Structure
+ *
+ * The algorithm is really two independent halves:
+ *
+ *  1. **A body-fat regression** over the ten measured impedances
+ *     ([fatMassFromImpedances]). On SSW532 hardware this half does not work;
+ *     see its KDoc.
+ *  2. **A derivation chain** ([derive]) in which every remaining metric falls
+ *     out of fat-free mass alone. This half is exact. Driven with the vendor
+ *     app's own body-fat figure it reproduces all 18 values the vendor app
+ *     displays, to the last digit — see `Wla25Test`.
+ *
+ * So this app keeps the chain and sources body fat from [Ssw532FatModel]
+ * instead of the regression.
+ *
+ * ## Load-bearing details
+ *
+ * Rounding order matters — each step is worth a tenth of a unit. Fat mass is
+ * rounded before fat-free mass is taken from it, and the BMI is rounded for
+ * display. [round1] is half-up in single precision because the vendor's `fmodf`
+ * chain is.
+ *
+ * One deliberate departure: the vendor also rounds *weight* to one decimal before
+ * anything else. [derive] uses the exact weight the scale reported instead, so a
+ * 71.15 kg weigh-in is not silently treated as 71.2. That has no effect on the
+ * reference weigh-in used to validate the chain (71.20 kg is already one decimal)
+ * and it keeps the finer weight visible in the derived kg figures.
  */
 object Wla25 {
+
+    /** Body fat is clamped to this range before anything is derived from it. */
+    private const val BFR_MIN = 3.0
+    private const val BFR_MAX = 60.0
+
+    /** Reference BMI the vendor uses for "standard weight". Indexed male/female. */
+    private const val STD_BMI_MALE = 22.0
+    private const val STD_BMI_FEMALE = 21.0
+
+    /** Fraction of standard weight that is fat-free / fat. Indexed [female, male]. */
+    private val FFM_FACTOR = doubleArrayOf(0.77, 0.85)
+    private val BFM_FACTOR = doubleArrayOf(0.23, 0.15)
+    private val SCORE_CORR = doubleArrayOf(-0.958, 0.983)
+
+    /**
+     * The vendor's validity gate. Slots 0 and 5 lead each of the two groups of
+     * five and are small; the other eight are ~300 ohm.
+     */
+    private val IMP_MIN = doubleArrayOf(1.0, 100.0, 100.0, 100.0, 100.0, 1.0, 100.0, 100.0, 100.0, 100.0)
+
     data class Result(
         val bmi: Double,
         val bodyFatPercent: Double,
@@ -29,329 +75,320 @@ object Wla25 {
         val bodyScore: Double,
         val fatMassKg: Double,
         val leanMassKg: Double,
-        /** Segmental fat/muscle kg+% for LA, RA, LL, RL, trunk */
-        val leftArmFatKg: Double,
-        val leftArmFatPct: Double,
-        val leftArmMuscleKg: Double,
-        val leftArmMusclePct: Double,
-        val rightArmFatKg: Double,
-        val rightArmFatPct: Double,
-        val rightArmMuscleKg: Double,
-        val rightArmMusclePct: Double,
-        val leftLegFatKg: Double,
-        val leftLegFatPct: Double,
-        val leftLegMuscleKg: Double,
-        val leftLegMusclePct: Double,
-        val rightLegFatKg: Double,
-        val rightLegFatPct: Double,
-        val rightLegMuscleKg: Double,
-        val rightLegMusclePct: Double,
-        val trunkFatKg: Double,
-        val trunkFatPct: Double,
-        val trunkMuscleKg: Double,
-        val trunkMusclePct: Double,
+        /** Standard weight for the height: the vendor's reference, and our ideal weight. */
+        val standardWeightKg: Double,
+        /** Segmental fat/muscle for LA, RA, LL, RL, trunk. Empty when impedances are unusable. */
+        val segments: List<Segment> = emptyList(),
     )
 
-    /** Coerce to IEEE-754 binary32 like the native library. */
+    data class Segment(
+        val name: String,
+        val fatKg: Double,
+        val fatPct: Double,
+        val muscleKg: Double,
+        val musclePct: Double,
+    )
+
+    /** Coerce to IEEE-754 binary32, as the native library does. */
     private fun f32(x: Double): Double = x.toFloat().toDouble()
 
     /**
-     * Device rounding: 1 decimal, half-up, float32. mirrors ICAlgCommon::ceil.
+     * The vendor's one-decimal rounding: half-up, computed in float32.
+     *
+     * Both properties matter. `round1(26.35)` is 26.4 where half-to-even would
+     * give 26.3; and 1.95 has a float32 fraction of exactly 0.95, so the half-up
+     * test fails and the answer is 1.9 rather than 2.0.
      */
-    fun round1(xIn: Double): Double {
-        val x = xIn
-        val ip = truncate(x)
-        var fr = f32(x % 1.0)
-        fr = f32(fr * 10.0)
-        val fr2 = f32(fr % 1.0)
-        var up = f32(fr + 1.0)
-        if (fr2 <= 0.5) up = fr
-        up = f32(truncate(up) / 10.0)
-        if (up == 0.0 && (x - ip) > 0.99) up = 1.0
-        return f32(up + f32(ip))
+    fun round1(value: Double): Double {
+        val v = value.toFloat()
+        val whole = v.toInt()
+        val tenths = (v % 1.0f) * 10.0f
+        val carried = if (tenths % 1.0f > 0.5f) tenths + 1.0f else tenths
+        return (carried.toInt() / 10.0f + whole).toDouble()
     }
 
-    private val FFM_FACTOR = doubleArrayOf(0.77, 0.85)
-    private val BFM_FACTOR = doubleArrayOf(0.23, 0.15)
-    private val SCORE_CORR = doubleArrayOf(-0.958, 0.983)
-    private val IMP_MIN = doubleArrayOf(1.0, 100.0, 100.0, 100.0, 100.0, 1.0, 100.0, 100.0, 100.0, 100.0)
+    fun bmi(heightCm: Int, weightKg: Double): Double = weightKg * 10000.0 / (heightCm * heightCm)
 
-    private fun standardBmi(age: Int, sex: Int): Double {
-        if (age < 18) {
-            // Under-18 height tree not ported; use adult constant (same as sacoma for adults).
-            return if (sex == 1) 22.0 else 21.0
-        }
-        return if (sex == 1) 22.0 else 21.0
+    private fun stdBmi(sexMale1: Int): Double =
+        if (sexMale1 == 1) STD_BMI_MALE else STD_BMI_FEMALE
+
+    /**
+     * Vendor "standard weight": reference BMI times height squared.
+     *
+     * This is also the ideal weight the vendor app displays — 67.4 kg at 175 cm
+     * for a male, which is `22 * 1.75^2`. Note it is *not* Broca (`height - 100`),
+     * which would give 75 kg and does not match the vendor app.
+     */
+    fun standardWeightKg(heightCm: Double, sexMale1: Int): Double {
+        val h = f32(heightCm / 100.0)
+        return f32(h * h * f32(stdBmi(sexMale1)))
     }
 
-    private fun stdWeight(height: Int, age: Int, sex: Int): Double {
-        val bmi = f32(standardBmi(age, sex))
-        val h = f32(height / 100.0)
-        return f32(h * h * bmi)
-    }
+    private fun standardFfmKg(heightCm: Double, sexMale1: Int): Double =
+        f32(FFM_FACTOR[sexMale1] * standardWeightKg(heightCm, sexMale1))
 
-    private fun standardFfm(height: Int, age: Int, sex: Int): Double =
-        f32(FFM_FACTOR[if (sex == 1) 1 else 0] * stdWeight(height, age, sex))
+    private fun standardBfmKg(heightCm: Double, sexMale1: Int): Double =
+        f32(BFM_FACTOR[sexMale1] * standardWeightKg(heightCm, sexMale1))
 
-    private fun standardBfm(height: Int, age: Int, sex: Int): Double =
-        f32(BFM_FACTOR[if (sex == 1) 1 else 0] * stdWeight(height, age, sex))
-
-    private fun score(
-        height: Int,
-        weight: Double,
-        age: Int,
-        sex: Int,
-        bodyFatPct: Double,
-    ): Int {
-        val bmi = f32(standardBmi(age, sex))
-        val fatKg = f32((bodyFatPct / 100.0) * weight)
-        val sw = f32(f32(height / 100.0) * f32(height / 100.0) * bmi)
-        val resid = f32(fatKg - f32(BFM_FACTOR[if (sex == 1) 1 else 0] * sw))
-        val corr = SCORE_CORR[if (resid < 0.0) 1 else 0]
-        return ((weight - fatKg) - f32(FFM_FACTOR[if (sex == 1) 1 else 0] * sw) + 80.0 + corr * resid).toInt()
-    }
-
-    private fun metabolicAge(age: Int, bodyFatPct: Double, sex: Int): Int {
-        if (age < 10) return age
-        val bf = bodyFatPct
-        val d = if (sex == 1) {
-            when {
-                bf < 14 -> -3
-                bf < 19 -> -2
-                bf < 24 -> -1
-                bf < 27 -> 1
-                bf < 30 -> 2
-                bf < 33 -> 3
-                bf < 36 -> 4
-                else -> 5
-            }
-        } else {
-            when {
-                bf < 24 -> -3
-                bf < 28 -> -2
-                bf < 32 -> -1
-                bf < 35 -> 1
-                bf < 38 -> 2
-                bf < 42 -> 3
-                bf < 45 -> 4
-                bf < 46 -> 0
-                else -> 5
-            }
-        }
-        return age + d
+    fun impedancesValid(imps: DoubleArray?): Boolean {
+        if (imps == null || imps.size != 10) return false
+        return imps.indices.none { imps[it] < IMP_MIN[it] }
     }
 
     /**
-     * @return null if validation gates fail
+     * The vendor's 13-term fat-mass regression over height, weight, rounded BMI
+     * and all ten impedances.
+     *
+     * ## Not usable on the SSW532 — kept for reference
+     *
+     * The regression wants the ten resistances in the wire order the Fitdays /
+     * Relaxmedic frames deliver them: two groups of five, each led by a small
+     * (~15-25 ohm) value. The SSW532 does not report that set. It gives two
+     * whole-body channels A and B plus eight segmental values Z1-Z8 whose
+     * semantics differ, and its two sub-100 values (Z3, Z8) swing over
+     * 10-49 ohm and 2.6-25 ohm between weigh-ins of the same person.
+     *
+     * Slot 5 carries a coefficient of 0.439 after a 0.826 scaling, so a 40 ohm
+     * swing there alone moves fat mass by ~14 kg. That is what made this app
+     * report 14.4-30.6 % body fat across 15 readings of a person the vendor app
+     * had steady at 14.6 %.
+     *
+     * This is not a mis-ordering that can be corrected. All 80,640 slot
+     * assignments that satisfy the gate were enumerated against those 15
+     * readings; the best achievable spread was 9.2 pp, against 1.7 pp for
+     * [Ssw532FatModel]. The inputs are the wrong quantities, not the right ones
+     * in the wrong order.
+     *
+     * openScale reaches the same conclusion by a different route: its
+     * `Wla25BodyComposition` is wired to the Relaxmedic handler, while its
+     * SSW532 handler uses `StandardImpedanceLib` over the foot-to-foot path.
+     *
+     * @param weightKg must already be rounded by [round1].
      */
-    fun calc(
-        weightKg: Double,
+    fun fatMassFromImpedances(heightCm: Int, weightKg: Double, imps: DoubleArray): Double {
+        val scaled0 = imps[0] * 0.826
+        val scaled5 = if (imps[5] <= imps[0]) imps[5] * 0.826 else scaled0 - 3.0
+        return weightKg * -0.138 +
+            heightCm * 0.164 +
+            round1(bmi(heightCm, weightKg)) * 2.657 +
+            imps[2] * -0.053 +
+            imps[1] * -0.000491 +
+            scaled0 * -0.03 +
+            imps[4] * -0.127 +
+            imps[3] * -0.052 +
+            imps[7] * 0.07 +
+            imps[6] * 0.019 +
+            scaled5 * 0.439 +
+            imps[9] * 0.153 +
+            imps[8] * 0.07 +
+            -88.052
+    }
+
+    /**
+     * Derive the full body composition from a body-fat percentage.
+     *
+     * Everything here follows from fat-free mass; the only measured inputs are
+     * weight, height, age, sex and [bodyFatPercentRaw]. Verified against the
+     * vendor app on all 18 displayed metrics.
+     *
+     * @param bodyFatPercentRaw body fat as a percentage of body weight, unrounded
+     *   and unclamped. From [Ssw532FatModel] on this hardware.
+     * @param imps optional ten-slot impedance vector, used only for the
+     *   segmental breakdown. Pass `null` to skip it.
+     */
+    fun derive(
         heightCm: Int,
-        sexMale1: Int,
+        rawWeightKg: Double,
         age: Int,
-        peopleType: Int,
-        imps: DoubleArray,
-    ): Result? {
-        require(imps.size == 10) { "WLA25 needs 10 impedances" }
-        val iVar6 = heightCm
-        val iVar1 = sexMale1
-        val iVar2 = age
-        var dVar33 = weightKg
+        sexMale1: Int,
+        bodyFatPercentRaw: Double,
+        imps: DoubleArray? = null,
+    ): Result {
+        // The vendor rounds weight to one decimal here. We use it exactly as the
+        // scale reported it, so 71.15 kg stays 71.15 rather than becoming 71.2.
+        // This changes nothing on the reference weigh-in (71.20 is already one
+        // decimal) and keeps the finer weight visible in every derived kg figure.
+        // Outputs are still rounded one-decimal, which is what the vendor displays.
+        val weight = rawWeightKg
+        val pct = bodyFatPercentRaw.coerceIn(BFR_MIN, BFR_MAX)
 
-        val dVar32 = round1(dVar33 * 10000.0 / (iVar6 * iVar6))
-        val p = DoubleArray(0x42)
-        p[0] = dVar32
+        // Fat mass is rounded before fat-free mass is taken from it.
+        val fatMass = round1(pct / 100.0 * weight)
+        val lean = weight - fatMass
+        val waterMass = lean * 0.733
 
-        val dVar27 = round1(standardBfm(iVar6, iVar2, iVar1))
-        val dVar40 = round1(standardFfm(iVar6, iVar2, iVar1))
-        val dVar29 = iVar6.toDouble()
+        val bfr = round1(pct)
+        val musclePct = round1((lean * 0.733 + lean * 0.2) / weight * 100.0)
+        val waterPct = round1(waterMass / weight * 100.0)
 
-        if (iVar6 !in 100..220) return null
-        if (dVar33 < 20.0 || dVar33 > 200.0) return null
-        for (i in 0 until 10) {
-            if (imps[i] < IMP_MIN[i]) return null
-        }
-
-        var dVar26 = imps[0]
-        val dVar34 = imps[1]
-        var dVar41 = imps[2]
-        val dVar31In = imps[3]
-        val dVar36In = imps[4]
-        var dVar28 = imps[5]
-        val dVar38In = imps[6]
-        val dVar45In = imps[7]
-        val dVar30In = imps[8]
-        val dVar43In = imps[9]
-
-        val dVar44 = dVar26 * 0.826
-        var dVar37 = if (dVar28 <= dVar26) dVar28 * 0.826 else dVar44 - 3.0
-        if (dVar44 < 0.0 || dVar37 < 0.0) return null
-
-        var dVar39 = (
-            dVar30In * 0.07 + dVar43In * 0.153 + dVar37 * 0.439 + dVar38In * 0.019 +
-                dVar45In * 0.07 + dVar29 * 0.164 + dVar33 * -0.138 + dVar32 * 2.657 +
-                dVar41 * -0.053 + dVar34 * -0.000491 + dVar44 * -0.03 +
-                dVar36In * -0.127 + dVar31In * -0.052 + -88.052
-            )
-        dVar26 = (dVar39 / dVar33) * 100.0
-        if (dVar26 < 3.0) {
-            dVar39 = dVar33 * 0.03
-            dVar26 = 3.0
-        } else if (dVar26 > 60.0) {
-            dVar39 = dVar33 * 0.6
-            dVar26 = 60.0
-        }
-        dVar28 = round1(dVar39) // fat mass kg
-        val fVar11 = round1(dVar26) // body fat %
-
-        val iVar5 = metabolicAge(iVar2, fVar11, iVar1)
-        var iVar6Score = score(iVar6, dVar33, iVar2, iVar1, fVar11)
-        if (iVar6Score < 21) iVar6Score = 20
-
-        var local110 = dVar38In * 0.007476 + (dVar28 * 0.081201 - dVar34 * 0.005752) + -0.662152
-        var local108 = dVar45In * 0.007476 + (dVar28 * 0.081201 - dVar41 * 0.005752) + -0.662152
-        var localC0 = dVar43In * 0.008645 + (dVar28 * 0.135438 - dVar36In * 0.00801) + 0.492479
-        var localC8 = dVar30In * 0.008645 + (dVar28 * 0.135438 - dVar31In * 0.00801) + 0.492479
-
-        if (0.3 < abs(local108 - local110)) {
-            if (local108 <= local110) {
-                val t = (dVar41 + dVar45In) / 20213.0
-                local108 = (if (dVar41 <= dVar34) t else -t) + local110
-            } else {
-                val t = (dVar34 + dVar38In) / 20213.0
-                local110 = (if (dVar34 <= dVar41) t else -t) + local108
-            }
-        }
-        if (0.5 < abs(localC0 - localC8)) {
-            if (localC0 <= localC8) {
-                val t = (dVar36In + dVar43In) / 20213.0
-                localC0 = (if (dVar36In <= dVar31In) t else -t) + localC8
-            } else {
-                val t = (dVar31In + dVar30In) / 20213.0
-                localC8 = (if (dVar31In <= dVar36In) t else -t) + localC0
-            }
-        }
-
-        dVar26 = dVar33 - dVar28 // lean mass
-        if (local108 < 0.1) local108 = (dVar41 + dVar45In) / 20213.0 + 0.1
-        dVar39 = dVar44 * 0.068621 + dVar28 * 0.552545 + dVar37 * -0.131612 + 0.322704
-        if (local110 < 0.1) local110 = (dVar34 + dVar38In) / 20113.0 + 0.1
-        if (dVar39 < 0.1) dVar39 = (dVar37 + dVar44) / 20203.0 + 0.1
-        if (localC0 < 0.1) localC0 = (dVar36In + dVar43In) / 20213.0 + 0.1
-        var localD0 = ((dVar41 * 0.002847 + dVar26 * 0.058707) - dVar45In * 0.005857) + 0.561911
-        if (localC8 < 0.1) localC8 = (dVar31In + dVar30In) / 20113.0 + 0.1
-        var localF0 = ((dVar34 * 0.002847 + dVar26 * 0.058707) - dVar38In * 0.005857) + 0.561911
-        if (localD0 < 0.2) localD0 = (dVar41 + dVar45In) / 20213.0 + 0.2
-        dVar41 = dVar44 * 0.005246 + dVar26 * 0.440922 + dVar37 * -0.010469 + -0.275461
-        if (localF0 < 0.2) localF0 = (dVar34 + dVar38In) / 20113.0 + 0.2
-        var localF8 = dVar43In * 0.008157 + (dVar26 * 0.176554 - dVar36In * 0.007381) + -0.688932
-        if (dVar41 < 0.7) dVar41 = (dVar37 + dVar44) / 20203.0 + 0.7
-        var local100 = dVar30In * 0.008157 + (dVar26 * 0.176554 - dVar31In * 0.007381) + -0.688932
-        if (localF8 < 0.2) localF8 = (dVar36In + dVar43In) / 20213.0 + 0.2
-        if (local100 < 0.2) local100 = (dVar31In + dVar30In) / 20113.0 + 0.2
-
-        val dVar34Bf = fVar11
-        val dVar31Diff = dVar27 - dVar28
-        var iVar8v = (dVar28 * 0.502 + dVar26 * -0.029 + -0.477).toInt()
-        if (iVar8v > 0x13) iVar8v = 0x14
-        var dVar36Diff = dVar40 - dVar26
-        if (iVar8v < 2) iVar8v = 1
-        val dVar28Water = dVar26 * 0.733
-        val dVar38Sub = (dVar34Bf * -0.0002 + 0.72) * dVar34Bf
-        val dVar45Mus = ((dVar28Water + dVar26 * 0.2) / dVar33) * 100.0
-        p[1] = round1(dVar34Bf)
-        p[3] = round1(dVar38Sub)
-        p[2] = round1(dVar45Mus)
-        val dVar38Bone = dVar26 * 0.067
-        dVar36Diff = round1(dVar36Diff)
-        val dVar45Water = (dVar28Water / dVar33) * 100.0
-        p[4] = iVar8v.toDouble()
-        val dVar31Ceil = round1(dVar31Diff)
-        if (dVar36Diff <= 0.0) dVar36Diff = 0.0
-        val dVar44Ref = dVar33 * 0.02 + dVar40 * 0.102 + dVar29 * -0.045 + 3.752
-        val dVar42Ref = dVar33 * 0.059 + dVar40 * 0.168 + dVar29 * -0.056 + 4.775
-        val dVar43Ref = dVar27 * 0.101 + dVar29 * -0.004 + 0.331
-        val dVar37Ref = dVar27 * 0.215 + dVar29 * -0.005 + 0.391
-        val dVar30Prot = ((dVar26 * 0.2) / dVar33) * 100.0
-        p[5] = round1(dVar38Bone)
-        val dVar28Skel = ((dVar28Water * 0.834 + -2.627) / dVar33) * 100.0
-        p[6] = round1(dVar45Water)
-        p[7] = round1(dVar30Prot)
-        p[8] = round1(dVar28Skel)
-
-        p[0x13] = local110
-        p[0x17] = local108
-        p[0x1b] = dVar39
-        p[0x0b] = localC8
-        p[0x0f] = localC0
-        p[0x15] = localF0
-        p[0x19] = localD0
-        p[0x11] = localF8
-        p[0x0d] = local100
-        p[0x1d] = dVar41
-        p[0x12] = (local110 / dVar43Ref) * 100.0
-        p[0x0a] = (localC8 / dVar37Ref) * 100.0
-        p[0x16] = (local108 / dVar43Ref) * 100.0
-        p[0x1a] = (dVar39 / (dVar29 * 0.006 + dVar27 * 0.389 + -0.683)) * 100.0
-        p[0x0e] = (localC0 / dVar37Ref) * 100.0
-        p[0x14] = (localF0 / dVar44Ref) * 100.0
-        p[0x18] = (localD0 / dVar44Ref) * 100.0
-        p[0x1c] = (dVar41 / (dVar33 * 0.166 + dVar40 * 0.485 + dVar29 * -0.16 + 13.595)) * 100.0
-        p[0x0c] = (local100 / dVar42Ref) * 100.0
-        p[0x10] = (localF8 / dVar42Ref) * 100.0
-        p[0x1e] = iVar6Score.toDouble()
-
-        val bmr = (dVar26 * 21.6 + 370.0).toInt()
+        // Visceral fat is an int cast, not a rounding, and is a 1..20 level.
+        val visceral = (lean * -0.029 + fatMass * 0.502 - 0.477).toInt().coerceIn(1, 20)
 
         return Result(
-            bmi = p[0],
-            bodyFatPercent = p[1],
-            musclePercent = p[2],
-            subcutaneousFatPercent = p[3],
-            visceralFat = p[4],
-            boneMassKg = p[5],
-            bodyWaterPercent = p[6],
-            proteinPercent = p[7],
-            skeletalMusclePercent = p[8],
-            bmrKcal = bmr,
-            metabolicAge = iVar5,
-            bodyScore = p[0x1e],
-            fatMassKg = dVar28,
-            leanMassKg = dVar26,
-            leftArmFatKg = p[0x13],
-            leftArmFatPct = p[0x12],
-            leftArmMuscleKg = p[0x15],
-            leftArmMusclePct = p[0x14],
-            rightArmFatKg = p[0x17],
-            rightArmFatPct = p[0x16],
-            rightArmMuscleKg = p[0x19],
-            rightArmMusclePct = p[0x18],
-            leftLegFatKg = p[0x0b],
-            leftLegFatPct = p[0x0a],
-            leftLegMuscleKg = p[0x0d],
-            leftLegMusclePct = p[0x0c],
-            rightLegFatKg = p[0x0f],
-            rightLegFatPct = p[0x0e],
-            rightLegMuscleKg = p[0x11],
-            rightLegMusclePct = p[0x10],
-            trunkFatKg = p[0x1b],
-            trunkFatPct = p[0x1a],
-            trunkMuscleKg = p[0x1d],
-            trunkMusclePct = p[0x1c],
+            bmi = round1(bmi(heightCm, weight)),
+            bodyFatPercent = bfr,
+            musclePercent = musclePct,
+            subcutaneousFatPercent = round1((bfr * -0.0002 + 0.72) * bfr),
+            visceralFat = visceral.toDouble(),
+            boneMassKg = round1(lean * 0.067),
+            bodyWaterPercent = waterPct,
+            proteinPercent = round1(lean * 0.2 / weight * 100.0),
+            skeletalMusclePercent = round1((waterMass * 0.834 - 2.627) / weight * 100.0),
+            bmrKcal = (lean * 21.6 + 370.0).toInt(),
+            metabolicAge = bodyAge(age, bfr, sexMale1),
+            bodyScore = bodyScore(heightCm.toDouble(), weight, sexMale1, bfr).toDouble(),
+            fatMassKg = fatMass,
+            leanMassKg = lean,
+            standardWeightKg = standardWeightKg(heightCm.toDouble(), sexMale1),
+            segments = if (impedancesValid(imps)) {
+                segments(heightCm.toDouble(), weight, sexMale1, fatMass, lean, imps!!)
+            } else {
+                emptyList()
+            },
+        )
+    }
+
+    /**
+     * Body score out of 100: 80, plus how far fat-free mass exceeds the
+     * reference for the height, minus a correction on the fat residual.
+     */
+    fun bodyScore(heightCm: Double, weightKg: Double, sexMale1: Int, bodyFatPercent: Double): Int {
+        val sw = standardWeightKg(heightCm, sexMale1)
+        val fatKg = f32(bodyFatPercent / 100.0 * weightKg)
+        val resid = f32(fatKg - f32(BFM_FACTOR[sexMale1] * sw))
+        val corr = SCORE_CORR[if (resid < 0.0) 1 else 0]
+        val score = ((weightKg - fatKg) - f32(FFM_FACTOR[sexMale1] * sw) + 80.0 + corr * resid).toInt()
+        return if (score < 21) 20 else score
+    }
+
+    /**
+     * Metabolic age: chronological age nudged by a per-sex body-fat band.
+     *
+     * The offsets skip zero — the healthy band steps straight from -1 to +1. The
+     * female band at `[45, 46)` returning +0 while `>= 46` gives +5 is not a
+     * transcription slip; the vendor library really does single it out.
+     */
+    fun bodyAge(age: Int, bodyFatPercent: Double, sexMale1: Int): Int {
+        if (age < 10) return age
+        val bands = if (sexMale1 == 1) {
+            arrayOf(14.0 to -3, 19.0 to -2, 24.0 to -1, 27.0 to 1, 30.0 to 2, 33.0 to 3, 36.0 to 4)
+        } else {
+            arrayOf(24.0 to -3, 28.0 to -2, 32.0 to -1, 35.0 to 1, 38.0 to 2, 42.0 to 3, 45.0 to 4, 46.0 to 0)
+        }
+        for ((upper, delta) in bands) {
+            if (bodyFatPercent < upper) return age + delta
+        }
+        return age + 5
+    }
+
+    /**
+     * Segmental fat and muscle for the five sites.
+     *
+     * Mostly a function of whole-body fat and lean mass, with a small impedance
+     * correction per site. Because the SSW532 slot mapping is unverified (see
+     * [fatMassFromImpedances]) the correction term is best-effort: these five
+     * rows are indicative, unlike the whole-body metrics from [derive]. The
+     * vendor app does not display them, so there is nothing to check against.
+     *
+     * The left/right reconciliation and the 0.1/0.2/0.7 kg floors below are
+     * verbatim from the vendor code, including the three different divisors
+     * (20213, 20203, 20113) — not a typo introduced here.
+     */
+    private fun segments(
+        heightCm: Double,
+        weightKg: Double,
+        sexMale1: Int,
+        fatMass: Double,
+        lean: Double,
+        imps: DoubleArray,
+    ): List<Segment> {
+        val trunkZ = imps[0] * 0.826
+        val trunkZ2 = if (imps[5] <= imps[0]) imps[5] * 0.826 else trunkZ - 3.0
+        val zLa = imps[1]
+        val zRa = imps[2]
+        val zLl = imps[3]
+        val zRl = imps[4]
+        val chB = imps[6]
+        val chA = imps[7]
+        val zX1 = imps[8]
+        val zX2 = imps[9]
+
+        val refBfm = round1(standardBfmKg(heightCm, sexMale1))
+        val refFfm = round1(standardFfmKg(heightCm, sexMale1))
+
+        var laFat = chB * 0.007476 + (fatMass * 0.081201 - zLa * 0.005752) - 0.662152
+        var raFat = chA * 0.007476 + (fatMass * 0.081201 - zRa * 0.005752) - 0.662152
+        var rlFat = zX2 * 0.008645 + (fatMass * 0.135438 - zRl * 0.00801) + 0.492479
+        var llFat = zX1 * 0.008645 + (fatMass * 0.135438 - zLl * 0.00801) + 0.492479
+
+        // Reconcile implausible left/right asymmetry.
+        if (abs(raFat - laFat) > 0.3) {
+            if (raFat <= laFat) {
+                val t = (zRa + chA) / 20213.0
+                raFat = (if (zRa <= zLa) t else -t) + laFat
+            } else {
+                val t = (zLa + chB) / 20213.0
+                laFat = (if (zLa <= zRa) t else -t) + raFat
+            }
+        }
+        if (abs(rlFat - llFat) > 0.5) {
+            if (rlFat <= llFat) {
+                val t = (zRl + zX2) / 20213.0
+                rlFat = (if (zRl <= zLl) t else -t) + llFat
+            } else {
+                val t = (zLl + zX1) / 20213.0
+                llFat = (if (zLl <= zRl) t else -t) + rlFat
+            }
+        }
+
+        var trunkFat = trunkZ * 0.068621 + fatMass * 0.552545 + trunkZ2 * -0.131612 + 0.322704
+        var raMus = ((zRa * 0.002847 + lean * 0.058707) - chA * 0.005857) + 0.561911
+        var laMus = ((zLa * 0.002847 + lean * 0.058707) - chB * 0.005857) + 0.561911
+        var trunkMus = trunkZ * 0.005246 + lean * 0.440922 + trunkZ2 * -0.010469 - 0.275461
+        var rlMus = zX2 * 0.008157 + (lean * 0.176554 - zRl * 0.007381) - 0.688932
+        var llMus = zX1 * 0.008157 + (lean * 0.176554 - zLl * 0.007381) - 0.688932
+
+        if (raFat < 0.1) raFat = (zRa + chA) / 20213.0 + 0.1
+        if (laFat < 0.1) laFat = (zLa + chB) / 20113.0 + 0.1
+        if (trunkFat < 0.1) trunkFat = (trunkZ2 + trunkZ) / 20203.0 + 0.1
+        if (rlFat < 0.1) rlFat = (zRl + zX2) / 20213.0 + 0.1
+        if (llFat < 0.1) llFat = (zLl + zX1) / 20113.0 + 0.1
+        if (raMus < 0.2) raMus = (zRa + chA) / 20213.0 + 0.2
+        if (laMus < 0.2) laMus = (zLa + chB) / 20113.0 + 0.2
+        if (trunkMus < 0.7) trunkMus = (trunkZ2 + trunkZ) / 20203.0 + 0.7
+        if (rlMus < 0.2) rlMus = (zRl + zX2) / 20213.0 + 0.2
+        if (llMus < 0.2) llMus = (zLl + zX1) / 20113.0 + 0.2
+
+        // Reference masses the vendor compares each site against.
+        val armMusRef = weightKg * 0.02 + refFfm * 0.102 + heightCm * -0.045 + 3.752
+        val legMusRef = weightKg * 0.059 + refFfm * 0.168 + heightCm * -0.056 + 4.775
+        val armFatRef = refBfm * 0.101 + heightCm * -0.004 + 0.331
+        val legFatRef = refBfm * 0.215 + heightCm * -0.005 + 0.391
+        val trunkFatRef = heightCm * 0.006 + refBfm * 0.389 - 0.683
+        val trunkMusRef = weightKg * 0.166 + refFfm * 0.485 + heightCm * -0.16 + 13.595
+
+        fun pct(v: Double, ref: Double) = if (ref > 0.0) v / ref * 100.0 else 0.0
+
+        return listOf(
+            Segment("Left arm", laFat, pct(laFat, armFatRef), laMus, pct(laMus, armMusRef)),
+            Segment("Right arm", raFat, pct(raFat, armFatRef), raMus, pct(raMus, armMusRef)),
+            Segment("Trunk", trunkFat, pct(trunkFat, trunkFatRef), trunkMus, pct(trunkMus, trunkMusRef)),
+            Segment("Left leg", llFat, pct(llFat, legFatRef), llMus, pct(llMus, legMusRef)),
+            Segment("Right leg", rlFat, pct(rlFat, legFatRef), rlMus, pct(rlMus, legMusRef)),
         )
     }
 }
 
 /**
- * Map SSW532 pkt0 channels A/B + pkt1 Z1…Z8 → WLA25's 10-slot vector.
+ * Map SSW532 pkt0 channels A/B + pkt1 Z1-Z8 onto WLA25's ten-slot vector.
  *
- * WLA25 gates: slots 0 and 5 may be small Ω (trunk); other slots ≥ 100 Ω.
- * On FG2211WB, Z3 and Z8 are the sub-100 values.
+ * **This ordering is unverified and only feeds the segmental breakdown.** The
+ * whole-body metrics no longer depend on it: body fat comes from
+ * [Ssw532FatModel] and everything else from [Wla25.derive]. See
+ * [Wla25.fatMassFromImpedances] for why the vector cannot be trusted for the
+ * fat regression.
  *
- * Channel order calibrated against Dr Trust 360 (same weigh-in, height 175 cm, age 26 male):
- * official fat 14.6% / water 62.7% / muscle 79.8% / bone 4.1 / BMR 1680 / score 83
- * matched by `[Z3, Z1, Z2, Z4, Z5, Z8, B, A, Z6, Z7]` (err ≈ 0.1).
- * Putting A/B in the last two slots (Fitdays-style) overstated fat by ~13 pp.
+ * Slots 0 and 5 take the two sub-100 ohm values, which on FG2211WB are Z3 and Z8.
  */
 object Ssw532ImpedanceMap {
     fun toWla25(
@@ -368,8 +405,8 @@ object Ssw532ImpedanceMap {
             z[3], // Z4 right leg
             z[4], // Z5 left leg
             z[7], // Z8 trunk/path (small)
-            channelBOhm, // pkt0 B. calibrated slot 6
-            channelAOhm, // pkt0 A. calibrated slot 7
+            channelBOhm,
+            channelAOhm,
             z[5], // Z6 cross-body
             z[6], // Z7 cross-body
         )
