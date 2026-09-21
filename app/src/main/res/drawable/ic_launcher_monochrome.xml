@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Monochrome layer for Material You themed icons (API 33+).
+
+    The launcher throws away these colours and re-tints the shape from the user's
+    wallpaper palette, so only the alpha silhouette matters. That has two
+    consequences versus ic_launcher_foreground.xml:
+
+      - no background, and no gradients
+      - the dial is drawn as one full-length arc. Splitting it into a dim track
+        and a bright progress arc is meaningless once everything is a single
+        colour, and layering two translucent strokes would only muddy the
+        silhouette.
+
+    Geometry otherwise matches ic_launcher_foreground.xml - see that file.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- full dial sweep, 195deg -> 345deg -->
+    <path
+        android:pathData="M28.886,54.271 A26,26 0 0 1 79.114,54.271"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="9.5"
+        android:strokeLineCap="round" />
+
+    <!-- weighing platform -->
+    <path
+        android:pathData="M37,75 L71,75"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round" />
+
+    <!-- needle -->
+    <path
+        android:pathData="M57.637,63.1 L62.5,46.278 L50.363,58.9 Z"
+        android:fillColor="#FF000000" />
+
+    <!-- needle hub -->
+    <path
+        android:pathData="M48,61 A6,6 0 0 1 60,61 A6,6 0 0 1 48,61 Z"
+        android:fillColor="#FF000000" />
+</vector>
