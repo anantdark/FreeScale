@@ -68,7 +68,17 @@ class BodyCompositionAccuracyTest {
         officialFat = 15.4,
     )
 
-    private val refs = listOf(ref1403, ref1508, ref1541)
+    /** Same Z6+A as [ref1508], higher weight; official app logged 15.0 %. */
+    private val ref1830 = Ref(
+        label = "2026-09-21 18:30",
+        weightKg = 71.75f,
+        channelAOhm = 285.4,
+        channelBOhm = 289.8,
+        z = listOf(284.0, 288.6, 9.1, 255.7, 250.5, 245.0, 243.5, 15.3),
+        officialFat = 15.0,
+    )
+
+    private val refs = listOf(ref1403, ref1508, ref1541, ref1830)
 
     private fun build(r: Ref) = BodyCompositionBuilder.build(
         weightKg = r.weightKg,
@@ -188,12 +198,12 @@ class BodyCompositionAccuracyTest {
     // ------------------------------------------------------------------
 
     /**
-     * All three reference weigh-ins must land within the model's stated accuracy.
+     * All reference weigh-ins must land within the model's stated accuracy.
      * 0.2 pp means the displayed one-decimal figure is within 0.1 of the vendor
      * app. Tightening further would mean fitting the vendor app's own noise.
      */
     @Test
-    fun `fat model matches all three official readings within 0,2 pp`() {
+    fun `fat model matches all official readings within 0,2 pp`() {
         for (r in refs) {
             val fat = build(r).fat
             val err = abs(fat - r.officialFat)
@@ -202,6 +212,18 @@ class BodyCompositionAccuracyTest {
                 err <= 0.2,
             )
         }
+    }
+
+    /**
+     * Regression guard for the 18:30 weigh-in: identical Z6+A to 15:08 but
+     * +0.60 kg, where bare Sun 2003 rose to 15.7 % while the official app
+     * logged 15.0 %. The weight correction must bring this back to 15.0.
+     */
+    @Test
+    fun `weight correction brings 1830 reading to official 15 percent`() {
+        val fat = build(ref1830).fat
+        assertEquals("official 15.0%", 15.0f, fat, 0.05f)
+        assertTrue("must not regress to the uncorrected 15.7%", abs(fat - 15.7f) > 0.3f)
     }
 
     /**
@@ -254,6 +276,7 @@ class BodyCompositionAccuracyTest {
             71.2f to (286.4 to listOf(303.4, 304.6, 47.1, 231.3, 251.1, 239.0, 255.7, 24.6)),
             71.15f to (286.7 to listOf(283.0, 293.3, 38.0, 231.5, 251.9, 243.7, 247.9, 18.8)),
             71.15f to (286.7 to listOf(286.1, 288.0, 32.3, 231.4, 252.3, 246.3, 243.9, 14.5)),
+            71.75f to (285.4 to listOf(284.0, 288.6, 9.1, 255.7, 250.5, 245.0, 243.5, 15.3)),
         )
 
         val fats = readings.map { (w, zs) ->

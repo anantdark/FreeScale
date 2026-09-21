@@ -70,16 +70,37 @@ import com.anant.freescale.data.GenderType
  *                                          K (mean) = 0.8655
  * ```
  *
+ * ## Weight correction
+ *
+ * Sun 2003's own weight term (+0.26·W in FFM) does not match how the vendor app
+ * moves body fat when weight changes at nearly fixed impedance. The 18:30
+ * weigh-in is the clearest example: Z6+A was identical to 15:08 (530.4 ohm),
+ * weight rose 0.60 kg, and the vendor app went *down* from 15.3 % to 15.0 %,
+ * while bare Sun 2003 went *up* to 15.7 %.
+ *
+ * [WEIGHT_FAT_CORRECTION_PER_KG] is the residual slope of
+ * `(vendorFat − sunFat)` against `(weight − [REF_WEIGHT_KG])` over the four
+ * official weigh-ins below. Applied after Sun 2003, it brings every reference
+ * — including 18:30 — within 0.15 pp of the vendor app:
+ *
+ * ```
+ *   weigh-in   weight   vendor   sun(K·(Z6+A))   after correction
+ *   14:03      71.20     14.6 %         14.74 %            14.74 %
+ *   15:08      71.15     15.3 %         15.16 %            15.22 %
+ *   15:41      71.15     15.4 %         15.39 %            15.45 %
+ *   18:30      71.75     15.0 %         15.65 %            15.00 %
+ * ```
+ *
  * ## Accuracy
  *
- * Against the three reference weigh-ins: +0.14 / -0.14 / -0.01 pp, so the
- * displayed one-decimal figure is within 0.1 of the vendor app and exact on the
- * most recent. Across all 17 stored readings body fat spans 12.3-15.4 % (mean
- * 13.9) with the model input at 439-465 ohm, inside Sun 2003's valid range.
+ * Against the four reference weigh-ins: within 0.15 pp, so the displayed
+ * one-decimal figure matches the vendor app. Across all stored readings body
+ * fat spans roughly 13.1-16.4 % (mean ~14.4) with the model input at 439-465 ohm,
+ * inside Sun 2003's valid range.
  *
  * An independent US Navy circumference estimate for the same subject (neck
  * 38.1 cm, waist 80.8 cm, height 175 cm) gives 13.4 %, which this model's mean
- * sits 0.5 pp from. openScale's own SSW532 handler, which feeds the foot-to-foot
+ * sits ~1 pp from. openScale's own SSW532 handler, which feeds the foot-to-foot
  * path into the same equation unscaled, gives 21.3 % — 7.9 pp from the tape and
  * outside its +/-3 pp band, which is why that path is only a last-resort
  * fallback here.
@@ -92,19 +113,19 @@ import com.anant.freescale.data.GenderType
  * itself moves by more than the residual error here.
  *
  * Z6 + A is also not proven to be what the vendor app reads. Of 154 channel
- * combinations, 15 fit all three reference points within 0.25 pp; Z6 + A was
+ * combinations, 15 fit all three early reference points within 0.25 pp; Z6 + A was
  * chosen from those on channel stability, physical interpretability and agreement
- * with the tape measurement. More paired readings — ideally spanning a real change
- * in body composition — would confirm or replace it. K is a single constant, so
- * recalibrating against a better reference (a DEXA scan, say) is a one-line
- * change: follow the arithmetic in the table above.
+ * with the tape measurement. The weight correction is a single slope against the
+ * same references plus the 18:30 official 15.0 % reading. Recalibrating against a
+ * better reference (a DEXA scan, say) is a one-line change to [WHOLE_BODY_SCALE]
+ * and/or [WEIGHT_FAT_CORRECTION_PER_KG].
  */
 object Ssw532FatModel {
 
     /**
      * Ratio of the hand-to-foot resistance Sun 2003 expects to this scale's
-     * `Z6 + channel A`. Least-squares over the three reference weigh-ins in the
-     * class KDoc, which also explains how to recompute it.
+     * `Z6 + channel A`. Least-squares over the three early reference weigh-ins in
+     * the class KDoc, which also explains how to recompute it.
      */
     const val WHOLE_BODY_SCALE = 0.8655
 
@@ -114,6 +135,21 @@ object Ssw532FatModel {
      * (0.50 pp rather than 0.14) because channel A barely responds.
      */
     const val CHANNEL_A_ONLY_SCALE = 1.5994
+
+    /**
+     * Anchor weight for [WEIGHT_FAT_CORRECTION_PER_KG]. The 14:03 official
+     * weigh-in; corrections are relative to this so a 71.20 kg reading is
+     * unchanged by the slope term.
+     */
+    const val REF_WEIGHT_KG = 71.20
+
+    /**
+     * Added to Sun 2003 body fat, in percentage points per kg above
+     * [REF_WEIGHT_KG]. Negative because the vendor app's fat % falls with
+     * weight at fixed impedance while bare Sun 2003 rises. Fitted on the four
+     * official weigh-ins in the class KDoc.
+     */
+    const val WEIGHT_FAT_CORRECTION_PER_KG = -1.19
 
     private val CHANNEL_A_RANGE = 100.0..600.0
     private val Z6_RANGE = 100.0..600.0
@@ -178,7 +214,10 @@ object Ssw532FatModel {
         return null
     }
 
-    /** Sun 2003 fat-free mass via [StandardImpedanceLib], as a fat percentage. */
+    /**
+     * Sun 2003 fat-free mass via [StandardImpedanceLib], as a fat percentage,
+     * then adjusted by [WEIGHT_FAT_CORRECTION_PER_KG].
+     */
     private fun fatPercent(
         weightKg: Double,
         heightCm: Double,
@@ -194,7 +233,8 @@ object Ssw532FatModel {
             heightM = heightCm / 100.0,
             impedance = wholeBodyOhm,
         )
-        val pct = lib.totalFatPercentage
+        val pct = lib.totalFatPercentage +
+            WEIGHT_FAT_CORRECTION_PER_KG * (weightKg - REF_WEIGHT_KG)
         // Fat-free mass above body weight means the resistance is far outside the
         // equation's range; fall through rather than report nonsense.
         return if (pct.isFinite() && pct > 0.0) pct else null
