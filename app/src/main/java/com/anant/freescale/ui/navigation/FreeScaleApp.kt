@@ -27,6 +27,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.anant.freescale.BuildConfig
 import com.anant.freescale.MeasureViewModel
+import com.anant.freescale.ui.components.KeepScreenOn
 import com.anant.freescale.ui.home.HomeScreen
 import com.anant.freescale.ui.progress.ProgressScreen
 import com.anant.freescale.ui.settings.SettingsScreen
@@ -70,6 +71,11 @@ fun FreeScaleApp(vm: MeasureViewModel) {
             },
         )
     }
+
+    // Don't let the screen sleep mid-weigh-in. Lives here rather than in HomeScreen
+    // so it still holds if the user wanders over to Progress or Settings while the
+    // scale is reading.
+    KeepScreenOn(enabled = state.measurePhase.isMeasuring)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),

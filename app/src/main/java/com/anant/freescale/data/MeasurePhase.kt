@@ -16,4 +16,16 @@ enum class MeasurePhase {
     MeasuringBia,
     /** Final measurement published. */
     Complete,
+    ;
+
+    /**
+     * True while the scale is actively taking a reading — feet on the platform
+     * through to the last impedance packet.
+     *
+     * Excludes [Ready] and [Armed] on purpose: those are waiting states that can
+     * sit there indefinitely if nobody steps on, so anything gated on this (such
+     * as holding the display awake) would never let go.
+     */
+    val isMeasuring: Boolean
+        get() = this == Weighing || this == WeightStable || this == MeasuringBia
 }

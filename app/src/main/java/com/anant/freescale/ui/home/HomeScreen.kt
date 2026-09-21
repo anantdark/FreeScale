@@ -581,9 +581,7 @@ private fun InstrumentReadout(
 
     val headline = phaseHeadline(phase, live, saved)
     val status = state.status
-    val measuringActive = phase == MeasurePhase.Weighing ||
-        phase == MeasurePhase.WeightStable ||
-        phase == MeasurePhase.MeasuringBia
+    val measuringActive = phase.isMeasuring
     val showMeasuringBanner =
         (measuringActive || forceShowLoadingAnimations) && !reduceAnimations
     val contentSwap = if (reduceAnimations) {
