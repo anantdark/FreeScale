@@ -380,17 +380,54 @@ object Wla25 {
 }
 
 /**
- * Map SSW532 pkt0 channels A/B + pkt1 Z1-Z8 onto WLA25's ten-slot vector.
+ * Map SSW532 pkt0 channels A/B + pkt1 Z1–Z8 onto the vendor ten-slot vector.
  *
- * **This ordering is unverified and only feeds the segmental breakdown.** The
- * whole-body metrics no longer depend on it: body fat comes from
- * [Ssw532FatModel] and everything else from [Wla25.derive]. See
- * [Wla25.fatMassFromImpedances] for why the vector cannot be trusted for the
- * fat regression.
+ * Paired DrTrust Frida captures (same kg as FreeScale) lock:
+ *   imps[3]=imps[4]=Z2, imps[6]=Z5, imps[7]=Z6, imps[8]=imps[9]=Z7, imps[1]≈A
  *
- * Slots 0 and 5 take the two sub-100 ohm values, which on FG2211WB are Z3 and Z8.
+ * Vendor-calibrated paths FreeScale does not raw-match:
+ *   - channel B is scaled by [CHANNEL_B_SCALE] (257→272.4)
+ *   - slots 0/5 are stable ~28/24 Ω priors (raw Z3/Z8 do not track official imps[0]/[5])
+ *
+ * Order: `[s0, A, B·1.06, Z2, Z2, s5, Z5, Z6, Z7, Z7]`
  */
 object Ssw532ImpedanceMap {
+    /** Official-path scale applied to pkt0 channel B before WLA37. */
+    const val CHANNEL_B_SCALE = 1.06
+
+    /**
+     * Vendor small-path priors observed as nearly constant across paired sessions
+     * while FreeScale Z3/Z8 vary and do not match official imps[0]/imps[5].
+     */
+    const val SMALL_PATH_0_OHM = 28.0
+    const val SMALL_PATH_5_OHM = 24.0
+
+    /** Official WLA37 impedance order. */
+    fun toWla37(
+        channelAOhm: Double,
+        channelBOhm: Double,
+        z1to8: List<Double>,
+    ): DoubleArray? {
+        if (z1to8.size < 8) return null
+        if (channelAOhm <= 0.0 || channelBOhm <= 0.0) return null
+        val z = z1to8
+        val z2 = z[1]
+        val z7 = z[6]
+        return doubleArrayOf(
+            SMALL_PATH_0_OHM,
+            channelAOhm,
+            channelBOhm * CHANNEL_B_SCALE,
+            z2,
+            z2,
+            SMALL_PATH_5_OHM,
+            z[4], // Z5
+            z[5], // Z6
+            z7,
+            z7,
+        )
+    }
+
+    /** @deprecated Prefer [toWla37]; kept for reference / older segment experiments. */
     fun toWla25(
         channelAOhm: Double,
         channelBOhm: Double,
@@ -399,16 +436,16 @@ object Ssw532ImpedanceMap {
         if (z1to8.size < 8) return null
         val z = z1to8
         return doubleArrayOf(
-            z[2], // Z3 trunk (small)
-            z[0], // Z1 arm path
-            z[1], // Z2 arm path
-            z[3], // Z4 right leg
-            z[4], // Z5 left leg
-            z[7], // Z8 trunk/path (small)
+            z[2],
+            z[0],
+            z[1],
+            z[3],
+            z[4],
+            z[7],
             channelBOhm,
             channelAOhm,
-            z[5], // Z6 cross-body
-            z[6], // Z7 cross-body
+            z[5],
+            z[6],
         )
     }
 }

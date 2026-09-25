@@ -9,3 +9,6 @@
 
 # Coroutines
 -dontwarn kotlinx.coroutines.**
+
+# Vendor body-fat JNI (symbol names tied to this package)
+-keep class com.icomon.icbodyfatalgorithms.** { *; }

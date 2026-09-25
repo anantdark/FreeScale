@@ -13,9 +13,8 @@ data class SegmentMetrics(
 /**
  * Full open dump of one SSW532 measurement.
  *
- * Body fat comes from the Sun 2003 fat-free-mass equation over the scale's
- * whole-body channel A; every other metric is derived from fat-free mass by the
- * Chipsea/ICOMON WLA25 chain. See `BodyCompositionBuilder`.
+ * Body fat comes from ICOMON WLA37 (same native lib as Dr. Trust); other metrics
+ * are derived from fat-free mass via the WLA25 chain. See `BodyCompositionBuilder`.
  *
  * The raw inputs ([channelAOhm], [zSegments], [pkt0Hex]…) are kept alongside the
  * results so a stored row can be recomputed offline if the model changes.

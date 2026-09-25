@@ -219,8 +219,8 @@ fun MeasurementDetail(
                 HexBlock("FFB3 pkt2 (end)", m.pkt2Hex)
 
                 Text(
-                    "Body fat comes from the Sun 2003 fat-free-mass equation over the scale's " +
-                        "whole-body channel A, calibrated to this hardware. Everything else is " +
+                    "Body fat comes from ICOMON WLA37 (same native library as the official " +
+                        "Dr. Trust app) over the scale's ten impedance channels. Everything else is " +
                         "derived from fat-free mass by the Chipsea/ICOMON WLA25 chain, which " +
                         "matches the Dr. Trust app exactly. The per-segment rows are indicative " +
                         "only — the segmental impedance slot order is unverified.",
