@@ -16,8 +16,8 @@ data class SegmentMetrics(
  * Body fat comes from ICOMON WLA37 (same native lib as Dr. Trust); other metrics
  * are derived from fat-free mass via the WLA25 chain. See `BodyCompositionBuilder`.
  *
- * The raw inputs ([channelAOhm], [zSegments], [pkt0Hex]…) are kept alongside the
- * results so a stored row can be recomputed offline if the model changes.
+ * The raw inputs ([impedances], [pkt0Hex]…) are kept alongside the results so a
+ * stored row can be recomputed offline if the model changes.
  */
 data class ScaleMeasurement(
     var userId: Int = 1,
@@ -48,32 +48,13 @@ data class ScaleMeasurement(
     var bodyScore: Float = 0.0f,
     var impedance: Double = 0.0,
     var h2rCoeff: Double = 0.0,
-    var channelAOhm: Double = 0.0,
-    var channelBOhm: Double = 0.0,
     var pkt0Cmd: Int = 0,
-    var pkt0ValidFlag: Int = 0,
-    var zSegments: List<Float> = emptyList(),
-    var wla25Inputs: List<Float> = emptyList(),
+    /** The scale's 10 impedances in ohm, as decoded by `Ssw532Impedances`. Empty when BIA was not measured. */
+    var impedances: List<Float> = emptyList(),
     var segments: List<SegmentMetrics> = emptyList(),
     var pkt0Hex: String = "",
     var pkt1Hex: String = "",
     var pkt2Hex: String = "",
 ) {
     val hasBodyComp: Boolean get() = fat > 0f
-
-    fun segmentLabeled(): List<Pair<String, Float>> {
-        val labels = listOf(
-            "Z1 (arm path)",
-            "Z2 (arm path)",
-            "Z3 Trunk",
-            "Z4 Right leg",
-            "Z5 Left leg",
-            "Z6 Cross-body",
-            "Z7 Cross-body",
-            "Z8 Trunk/path",
-        )
-        return zSegments.mapIndexed { i, v ->
-            (labels.getOrElse(i) { "Z${i + 1}" }) to v
-        }
-    }
 }

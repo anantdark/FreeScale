@@ -15,16 +15,15 @@ import kotlin.math.abs
  *
  * The algorithm is really two independent halves:
  *
- *  1. **A body-fat regression** over the ten measured impedances
- *     ([fatMassFromImpedances]). On SSW532 hardware this half does not work;
- *     see its KDoc.
+ *  1. **A body-fat regression** over the ten measured impedances. Not used here:
+ *     the SSW532 reports `alg_type` 37, so body fat comes from the native WLA37
+ *     ([Wla37]) instead.
  *  2. **A derivation chain** ([derive]) in which every remaining metric falls
  *     out of fat-free mass alone. This half is exact. Driven with the vendor
  *     app's own body-fat figure it reproduces all 18 values the vendor app
  *     displays, to the last digit — see `Wla25Test`.
  *
- * So this app keeps the chain and sources body fat from [Ssw532FatModel]
- * instead of the regression.
+ * So this app keeps the chain and sources body fat from [Wla37].
  *
  * ## Load-bearing details
  *
@@ -136,55 +135,6 @@ object Wla25 {
     }
 
     /**
-     * The vendor's 13-term fat-mass regression over height, weight, rounded BMI
-     * and all ten impedances.
-     *
-     * ## Not usable on the SSW532 — kept for reference
-     *
-     * The regression wants the ten resistances in the wire order the Fitdays /
-     * Relaxmedic frames deliver them: two groups of five, each led by a small
-     * (~15-25 ohm) value. The SSW532 does not report that set. It gives two
-     * whole-body channels A and B plus eight segmental values Z1-Z8 whose
-     * semantics differ, and its two sub-100 values (Z3, Z8) swing over
-     * 10-49 ohm and 2.6-25 ohm between weigh-ins of the same person.
-     *
-     * Slot 5 carries a coefficient of 0.439 after a 0.826 scaling, so a 40 ohm
-     * swing there alone moves fat mass by ~14 kg. That is what made this app
-     * report 14.4-30.6 % body fat across 15 readings of a person the vendor app
-     * had steady at 14.6 %.
-     *
-     * This is not a mis-ordering that can be corrected. All 80,640 slot
-     * assignments that satisfy the gate were enumerated against those 15
-     * readings; the best achievable spread was 9.2 pp, against 1.7 pp for
-     * [Ssw532FatModel]. The inputs are the wrong quantities, not the right ones
-     * in the wrong order.
-     *
-     * openScale reaches the same conclusion by a different route: its
-     * `Wla25BodyComposition` is wired to the Relaxmedic handler, while its
-     * SSW532 handler uses `StandardImpedanceLib` over the foot-to-foot path.
-     *
-     * @param weightKg must already be rounded by [round1].
-     */
-    fun fatMassFromImpedances(heightCm: Int, weightKg: Double, imps: DoubleArray): Double {
-        val scaled0 = imps[0] * 0.826
-        val scaled5 = if (imps[5] <= imps[0]) imps[5] * 0.826 else scaled0 - 3.0
-        return weightKg * -0.138 +
-            heightCm * 0.164 +
-            round1(bmi(heightCm, weightKg)) * 2.657 +
-            imps[2] * -0.053 +
-            imps[1] * -0.000491 +
-            scaled0 * -0.03 +
-            imps[4] * -0.127 +
-            imps[3] * -0.052 +
-            imps[7] * 0.07 +
-            imps[6] * 0.019 +
-            scaled5 * 0.439 +
-            imps[9] * 0.153 +
-            imps[8] * 0.07 +
-            -88.052
-    }
-
-    /**
      * Derive the full body composition from a body-fat percentage.
      *
      * Everything here follows from fat-free mass; the only measured inputs are
@@ -192,7 +142,7 @@ object Wla25 {
      * vendor app on all 18 displayed metrics.
      *
      * @param bodyFatPercentRaw body fat as a percentage of body weight, unrounded
-     *   and unclamped. From [Ssw532FatModel] on this hardware.
+     *   and unclamped. From [Wla37] on this hardware.
      * @param imps optional ten-slot impedance vector, used only for the
      *   segmental breakdown. Pass `null` to skip it.
      */
@@ -285,10 +235,10 @@ object Wla25 {
      * Segmental fat and muscle for the five sites.
      *
      * Mostly a function of whole-body fat and lean mass, with a small impedance
-     * correction per site. Because the SSW532 slot mapping is unverified (see
-     * [fatMassFromImpedances]) the correction term is best-effort: these five
-     * rows are indicative, unlike the whole-body metrics from [derive]. The
-     * vendor app does not display them, so there is nothing to check against.
+     * correction per site. The correction term is fed the WLA37 impedance vector
+     * and has not been checked against the vendor app: these five rows are
+     * indicative, unlike the whole-body metrics from [derive]. The vendor app
+     * does not display them, so there is nothing to check against.
      *
      * The left/right reconciliation and the 0.1/0.2/0.7 kg floors below are
      * verbatim from the vendor code, including the three different divisors
@@ -375,77 +325,6 @@ object Wla25 {
             Segment("Trunk", trunkFat, pct(trunkFat, trunkFatRef), trunkMus, pct(trunkMus, trunkMusRef)),
             Segment("Left leg", llFat, pct(llFat, legFatRef), llMus, pct(llMus, legMusRef)),
             Segment("Right leg", rlFat, pct(rlFat, legFatRef), rlMus, pct(rlMus, legMusRef)),
-        )
-    }
-}
-
-/**
- * Map SSW532 pkt0 channels A/B + pkt1 Z1–Z8 onto the vendor ten-slot vector.
- *
- * Paired DrTrust Frida captures (same kg as FreeScale) lock:
- *   imps[3]=imps[4]=Z2, imps[6]=Z5, imps[7]=Z6, imps[8]=imps[9]=Z7, imps[1]≈A
- *
- * Vendor-calibrated paths FreeScale does not raw-match:
- *   - channel B is scaled by [CHANNEL_B_SCALE] (257→272.4)
- *   - slots 0/5 are stable ~28/24 Ω priors (raw Z3/Z8 do not track official imps[0]/[5])
- *
- * Order: `[s0, A, B·1.06, Z2, Z2, s5, Z5, Z6, Z7, Z7]`
- */
-object Ssw532ImpedanceMap {
-    /** Official-path scale applied to pkt0 channel B before WLA37. */
-    const val CHANNEL_B_SCALE = 1.06
-
-    /**
-     * Vendor small-path priors observed as nearly constant across paired sessions
-     * while FreeScale Z3/Z8 vary and do not match official imps[0]/imps[5].
-     */
-    const val SMALL_PATH_0_OHM = 28.0
-    const val SMALL_PATH_5_OHM = 24.0
-
-    /** Official WLA37 impedance order. */
-    fun toWla37(
-        channelAOhm: Double,
-        channelBOhm: Double,
-        z1to8: List<Double>,
-    ): DoubleArray? {
-        if (z1to8.size < 8) return null
-        if (channelAOhm <= 0.0 || channelBOhm <= 0.0) return null
-        val z = z1to8
-        val z2 = z[1]
-        val z7 = z[6]
-        return doubleArrayOf(
-            SMALL_PATH_0_OHM,
-            channelAOhm,
-            channelBOhm * CHANNEL_B_SCALE,
-            z2,
-            z2,
-            SMALL_PATH_5_OHM,
-            z[4], // Z5
-            z[5], // Z6
-            z7,
-            z7,
-        )
-    }
-
-    /** @deprecated Prefer [toWla37]; kept for reference / older segment experiments. */
-    fun toWla25(
-        channelAOhm: Double,
-        channelBOhm: Double,
-        z1to8: List<Double>,
-    ): DoubleArray? {
-        if (z1to8.size < 8) return null
-        val z = z1to8
-        return doubleArrayOf(
-            z[2],
-            z[0],
-            z[1],
-            z[3],
-            z[4],
-            z[7],
-            channelBOhm,
-            channelAOhm,
-            z[5],
-            z[6],
         )
     }
 }

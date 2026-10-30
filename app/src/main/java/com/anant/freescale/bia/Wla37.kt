@@ -1,5 +1,6 @@
 package com.anant.freescale.bia
 
+import com.anant.freescale.util.BleLogger
 import com.icomon.icbodyfatalgorithms.ICBodyFatAlgorithms
 import com.icomon.icbodyfatalgorithms.ICBodyFatAlgorithmsParams
 import com.icomon.icbodyfatalgorithms.ICBodyFatAlgorithmsPeopleType
@@ -9,9 +10,9 @@ import com.icomon.icbodyfatalgorithms.ICBodyFatAlgorithmsType
 
 /**
  * Official Dr. Trust / ICOMON **WLA37** body-fat calc via
- * `libICBodyFatAlgorithms.so` (Frida-confirmed on-device).
+ * `libICBodyFatAlgorithms.so`, the same library and call the vendor app makes.
  *
- * Requires a 10-slot impedance vector from [Ssw532ImpedanceMap.toWla37].
+ * Requires the 10-slot impedance vector from [Ssw532Impedances.decode].
  */
 object Wla37 {
     /**
@@ -44,9 +45,11 @@ object Wla37 {
             val result = ICBodyFatAlgorithms.calc(params) ?: return null
             val v = result.bfr
             if (v.isFinite() && v > 0.0 && v < 60.0) v else null
-        } catch (_: UnsatisfiedLinkError) {
+        } catch (e: UnsatisfiedLinkError) {
+            BleLogger.w("WLA37 native lib unavailable: ${e.message}")
             null
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            BleLogger.w("WLA37 calc failed: $e")
             null
         }
     }

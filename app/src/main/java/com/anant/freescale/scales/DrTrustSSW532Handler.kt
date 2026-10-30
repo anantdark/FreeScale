@@ -3,6 +3,7 @@ package com.anant.freescale.scales
 import android.bluetooth.BluetoothGatt
 import android.os.SystemClock
 import com.anant.freescale.bia.BodyCompositionBuilder
+import com.anant.freescale.bia.Ssw532Impedances
 import com.anant.freescale.ble.GattClient
 import com.anant.freescale.data.MeasurePhase
 import com.anant.freescale.data.ScaleMeasurement
@@ -42,14 +43,9 @@ class DrTrustSSW532Handler(
     private var savedWeightKg: Float = 0f
     private var bodyCompPublished = false
     private var pkt0Valid = false
-    private var z3 = 0.0
-    private var z4 = 0.0
-    private var z5 = 0.0
-    private var zSegments: List<Double> = emptyList()
-    private var channelAOhm = 0.0
-    private var channelBOhm = 0.0
     private var lastPkt0Cmd = 0
-    private var lastPkt0ValidFlag = 0
+    private var pkt0Raw: ByteArray? = null
+    private var vendorImps: DoubleArray? = null
     private var pkt0Hex = ""
     private var pkt1Hex = ""
     private var pkt2Hex = ""
@@ -212,38 +208,26 @@ class DrTrustSSW532Handler(
                     pkt0Valid = false
                     return
                 }
-                pkt0Valid = d[14].toUByte().toInt() == 0x01
-                if (!pkt0Valid) return
+                // Byte 14 is the high byte of the first impedance word, not a valid flag.
+                // Whether BIA was measured is decided from the decoded impedances at pkt1.
+                pkt0Valid = true
+                pkt0Raw = d.copyOf()
                 val kg = readBE24(d, 9) / 1000.0f
                 if (kg > 0f) pendingWeightKg = kg
-                // Whole-body channels A/B at [15-16] / [17-18]
-                channelAOhm = readLE16(d, 15) / 10.0
-                channelBOhm = readLE16(d, 17) / 10.0
                 lastPkt0Cmd = cmd
-                lastPkt0ValidFlag = d[14].toUByte().toInt()
                 pkt0Hex = d.toHex()
-                BleLogger.i("pkt0 channels A=$channelAOhm B=$channelBOhm Ω")
-                if (channelAOhm > 0.0 || channelBOhm > 0.0) {
+                // Impedance words start at byte 14 and run on into pkt1; see Ssw532Impedances.
+                if (d.sliceArray(14..18).any { it.toInt() != 0 }) {
                     setPhase(MeasurePhase.MeasuringBia)
                 }
             }
             0x01 -> {
                 if (!pkt0Valid || !isLiveMeasurement) return
-                val segs = mutableListOf<Double>()
-                for (i in 0 until 8) {
-                    segs += readLE16(d, 3 + i * 2) / 10.0
-                }
-                zSegments = segs
-                z3 = segs.getOrElse(2) { 0.0 }
-                z4 = segs.getOrElse(3) { 0.0 }
-                z5 = segs.getOrElse(4) { 0.0 }
-                gotImpedance = true
+                vendorImps = pkt0Raw?.let { Ssw532Impedances.decode(it, d) }
+                gotImpedance = vendorImps != null
                 pkt1Hex = d.toHex()
                 setPhase(MeasurePhase.MeasuringBia)
-                BleLogger.i(
-                    "pkt1 Z=${segs.joinToString { "%.1f".format(it) }} " +
-                        "footPath=${z3 + z4 + z5}"
-                )
+                BleLogger.i("pkt1 impedances=${vendorImps?.joinToString { "%.1f".format(it) }}")
             }
             0x02 -> {
                 pkt2Hex = d.toHex()
@@ -286,24 +270,19 @@ class DrTrustSSW532Handler(
     private fun publishWithBodyComp() {
         fallbackJob?.cancel()
         fallbackJob = null
-        val wholeBodyZ = z3 + z4 + z5
         val m = BodyCompositionBuilder.build(
             weightKg = pendingWeightKg,
             heightCm = user.bodyHeight,
             age = user.age,
             gender = user.gender,
-            wholeBodyOhm = wholeBodyZ,
-            segmentsOhm = zSegments,
-            channelAOhm = channelAOhm,
-            channelBOhm = channelBOhm,
+            impedances = vendorImps,
             pkt0Cmd = lastPkt0Cmd,
-            pkt0ValidFlag = lastPkt0ValidFlag,
             pkt0Hex = pkt0Hex,
             pkt1Hex = pkt1Hex,
             pkt2Hex = pkt2Hex,
         )
         if (m.fat <= 0f) {
-            BleLogger.w("body comp sanity fail fatPct=${m.fat} Z=$wholeBodyZ")
+            BleLogger.w("body comp sanity fail fatPct=${m.fat} imps=${vendorImps?.toList()}")
             savedWeightKg = pendingWeightKg
             gatt.disconnect()
             return
@@ -325,14 +304,9 @@ class DrTrustSSW532Handler(
     private fun reset() {
         pendingWeightKg = 0f
         pkt0Valid = false
-        z3 = 0.0
-        z4 = 0.0
-        z5 = 0.0
-        zSegments = emptyList()
-        channelAOhm = 0.0
-        channelBOhm = 0.0
         lastPkt0Cmd = 0
-        lastPkt0ValidFlag = 0
+        pkt0Raw = null
+        vendorImps = null
         pkt0Hex = ""
         pkt1Hex = ""
         pkt2Hex = ""
@@ -528,9 +502,6 @@ class DrTrustSSW532Handler(
         (d[off].toUByte().toInt() shl 16) or
             (d[off + 1].toUByte().toInt() shl 8) or
             d[off + 2].toUByte().toInt()
-
-    private fun readLE16(d: ByteArray, off: Int) =
-        d[off].toUByte().toInt() or (d[off + 1].toUByte().toInt() shl 8)
 
     companion object {
         private const val KEEPALIVE_INTERVAL_MS = 5_000L

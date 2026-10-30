@@ -1,6 +1,7 @@
 package com.anant.freescale.data.backup
 
 import com.anant.freescale.BuildConfig
+import com.anant.freescale.bia.Ssw532Impedances
 import com.anant.freescale.data.ScaleMeasurement
 import com.anant.freescale.data.SegmentMetrics
 import com.anant.freescale.data.UserProfilePrefs
@@ -115,12 +116,8 @@ object MeasurementBackupJson {
             .put("bodyScore", m.bodyScore.toDouble())
             .put("impedance", m.impedance)
             .put("h2rCoeff", m.h2rCoeff)
-            .put("channelAOhm", m.channelAOhm)
-            .put("channelBOhm", m.channelBOhm)
             .put("pkt0Cmd", m.pkt0Cmd)
-            .put("pkt0ValidFlag", m.pkt0ValidFlag)
-            .put("zSegments", encodeFloatArray(m.zSegments))
-            .put("wla25Inputs", encodeFloatArray(m.wla25Inputs))
+            .put("impedances", encodeFloatArray(m.impedances))
             .put("segments", encodeSegments(m.segments))
             .put("pkt0Hex", m.pkt0Hex)
             .put("pkt1Hex", m.pkt1Hex)
@@ -158,12 +155,12 @@ object MeasurementBackupJson {
             bodyScore = o.optDouble("bodyScore").toFloat(),
             impedance = o.optDouble("impedance"),
             h2rCoeff = o.optDouble("h2rCoeff"),
-            channelAOhm = o.optDouble("channelAOhm"),
-            channelBOhm = o.optDouble("channelBOhm"),
             pkt0Cmd = o.optInt("pkt0Cmd"),
-            pkt0ValidFlag = o.optInt("pkt0ValidFlag"),
-            zSegments = decodeFloatArray(o.optJSONArray("zSegments")),
-            wla25Inputs = decodeFloatArray(o.optJSONArray("wla25Inputs")),
+            // Backups written before the wire format was fixed carry mis-parsed channel A/B
+            // and Z1-Z8 values; those are dropped and the impedances re-decoded from the frames.
+            impedances = o.optJSONArray("impedances")?.let { decodeFloatArray(it) }
+                ?: (Ssw532Impedances.decodeHex(o.optString("pkt0Hex"), o.optString("pkt1Hex"))
+                    ?.map { it.toFloat() } ?: emptyList()),
             segments = decodeSegments(o.optJSONArray("segments")),
             pkt0Hex = o.optString("pkt0Hex"),
             pkt1Hex = o.optString("pkt1Hex"),
