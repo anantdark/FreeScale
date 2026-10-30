@@ -190,40 +190,27 @@ fun MeasurementDetail(
             }
 
             if (debugMode) {
-                SectionTitle("Impedance (raw from scale)")
-                MetricRow("Whole-body R (model input)", "${"%.2f".format(m.impedance)} Ω")
+                SectionTitle("Impedance (decoded from scale)")
                 MetricRow("H²/R coefficient", "%.4f".format(m.h2rCoeff))
-                MetricRow("pkt0 channel A", "${"%.2f".format(m.channelAOhm)} Ω")
-                MetricRow("pkt0 channel B", "${"%.2f".format(m.channelBOhm)} Ω")
-                MetricRow("pkt0 cmd", "0x${m.pkt0Cmd.toString(16)}  valid=${m.pkt0ValidFlag}")
-
-                SectionTitle("8-electrode segments (pkt1)")
-                m.segmentLabeled().forEach { (label, ohm) ->
-                    MetricRow(label, "${"%.2f".format(ohm)} Ω")
-                }
-
-                if (m.wla25Inputs.size == 10) {
-                    SectionTitle("Segmental input vector (10 Ω)")
-                    val names = listOf(
-                        "i0 Z3 trunk", "i1 Z1", "i2 Z2", "i3 Z4 R-leg", "i4 Z5 L-leg",
-                        "i5 Z8", "i6 chB", "i7 chA", "i8 Z6", "i9 Z7",
-                    )
-                    m.wla25Inputs.forEachIndexed { i, v ->
-                        MetricRow(names.getOrElse(i) { "i$i" }, "${"%.2f".format(v)} Ω")
+                MetricRow("pkt0 cmd", "0x${m.pkt0Cmd.toString(16)}")
+                if (m.impedances.size == 10) {
+                    SectionTitle("WLA37 input vector (10 Ω)")
+                    m.impedances.forEachIndexed { i, v ->
+                        MetricRow("imp[$i]", "${"%.1f".format(v)} Ω")
                     }
                 }
 
                 SectionTitle("BLE frames (hex)")
-                HexBlock("FFB3 pkt0 (weight + channels)", m.pkt0Hex)
-                HexBlock("FFB3 pkt1 (segmental Z)", m.pkt1Hex)
+                HexBlock("FFB3 pkt0 (weight + impedances 0-2)", m.pkt0Hex)
+                HexBlock("FFB3 pkt1 (impedances 2-9)", m.pkt1Hex)
                 HexBlock("FFB3 pkt2 (end)", m.pkt2Hex)
 
                 Text(
                     "Body fat comes from ICOMON WLA37 (same native library as the official " +
-                        "Dr. Trust app) over the scale's ten impedance channels. Everything else is " +
-                        "derived from fat-free mass by the Chipsea/ICOMON WLA25 chain, which " +
-                        "matches the Dr. Trust app exactly. The per-segment rows are indicative " +
-                        "only — the segmental impedance slot order is unverified.",
+                        "Dr. Trust app) over the scale's ten impedance values, decoded exactly as the " +
+                        "vendor SDK does. Everything else is derived from body fat by the " +
+                        "Chipsea/ICOMON WLA25 chain, which matches the Dr. Trust app exactly. The " +
+                        "per-segment rows are indicative only.",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 4.dp),
                 )

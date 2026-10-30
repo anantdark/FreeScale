@@ -8,10 +8,13 @@ import com.anant.freescale.util.BleLogger
 /**
  * Turns one SSW532 weigh-in into a [ScaleMeasurement].
  *
- *  1. Prefer official **WLA37** body fat via [Wla37] + [Ssw532ImpedanceMap.toWla37]
- *     (same `libICBodyFatAlgorithms.so` path as Dr. Trust 360).
- *  2. Fall back to [Ssw532FatModel] (Sun 2003) if native calc is unavailable.
- *  3. [Wla25.derive] fills the remaining metrics from fat-free mass.
+ *  1. Body fat comes from the official **WLA37** native lib ([Wla37]), fed the 10 impedances
+ *     decoded by [Ssw532Impedances]: the same vector Dr. Trust 360 passes it.
+ *  2. [Wla25.derive] fills the remaining metrics from that body fat.
+ *
+ * If the impedances or the native lib are unavailable (e.g. a non-arm64 device) the result
+ * is weight only. There is deliberately no estimated fallback: a guessed body fat that
+ * looks plausible is worse than none.
  */
 object BodyCompositionBuilder {
     fun build(
@@ -19,79 +22,43 @@ object BodyCompositionBuilder {
         heightCm: Float,
         age: Int,
         gender: GenderType,
-        /** Foot-to-foot path Z3+Z4+Z5, ohm. Fallback input when channel A is unusable. */
-        wholeBodyOhm: Double,
-        segmentsOhm: List<Double>,
-        channelAOhm: Double = 0.0,
-        channelBOhm: Double = 0.0,
+        /** The 10 WLA37 impedances from [Ssw532Impedances.decode], ohm; null if BIA failed. */
+        impedances: DoubleArray?,
         pkt0Cmd: Int = 0,
-        pkt0ValidFlag: Int = 0,
         pkt0Hex: String = "",
         pkt1Hex: String = "",
         pkt2Hex: String = "",
     ): ScaleMeasurement {
         val sex = if (gender == GenderType.MALE) 1 else 0
-        val imps = Ssw532ImpedanceMap.toWla37(channelAOhm, channelBOhm, segmentsOhm)
+        val imps = impedances?.takeIf { it.size == Ssw532Impedances.COUNT }
 
-        var bodyFatPercent: Double? = null
-        var algorithmLabel = ""
-        var impedanceForMeta = wholeBodyOhm
-
-        if (imps != null) {
-            bodyFatPercent = Wla37.calcBodyFatPercent(
+        val fat = imps?.let {
+            Wla37.calcBodyFatPercent(
                 weightKg = weightKg.toDouble(),
                 heightCm = heightCm.toInt(),
                 age = age,
                 sexMale = gender == GenderType.MALE,
-                imps = imps,
+                imps = it,
             )
-            if (bodyFatPercent != null) {
-                algorithmLabel = "ICOMON WLA37 (official) + WLA25 derivation"
-                impedanceForMeta = channelAOhm
-            }
         }
-
-        if (bodyFatPercent == null) {
-            val estimate = Ssw532FatModel.estimate(
-                weightKg = weightKg.toDouble(),
-                heightCm = heightCm.toDouble(),
-                age = age,
-                gender = gender,
-                channelAOhm = channelAOhm,
-                z6Ohm = segmentsOhm.getOrElse(5) { 0.0 },
-                footPathOhm = wholeBodyOhm,
+        if (imps == null || fat == null) {
+            BleLogger.w("No body fat (impedances=${imps != null}, wla37=${fat != null}); weight only")
+            return ScaleMeasurement(
+                dateTime = java.util.Date(),
+                genderLabel = genderLabel(gender),
+                algorithm = "Weight only (body fat unavailable)",
+                weight = weightKg,
+                heightCm = heightCm,
+                ageYears = age,
+                impedances = imps?.map { it.toFloat() } ?: emptyList(),
+                pkt0Cmd = pkt0Cmd,
+                pkt0Hex = pkt0Hex,
+                pkt1Hex = pkt1Hex,
+                pkt2Hex = pkt2Hex,
             )
-            if (estimate == null) {
-                BleLogger.w(
-                    "No usable impedance path (chA=$channelAOhm footPath=$wholeBodyOhm); weight only"
-                )
-                return ScaleMeasurement(
-                    dateTime = java.util.Date(),
-                    genderLabel = genderLabel(gender),
-                    algorithm = "Weight only (impedance unusable)",
-                    weight = weightKg,
-                    heightCm = heightCm,
-                    ageYears = age,
-                    impedance = wholeBodyOhm,
-                    channelAOhm = channelAOhm,
-                    channelBOhm = channelBOhm,
-                    pkt0Cmd = pkt0Cmd,
-                    pkt0ValidFlag = pkt0ValidFlag,
-                    zSegments = segmentsOhm.map { it.toFloat() },
-                    pkt0Hex = pkt0Hex,
-                    pkt1Hex = pkt1Hex,
-                    pkt2Hex = pkt2Hex,
-                )
-            }
-            bodyFatPercent = estimate.bodyFatPercent
-            algorithmLabel =
-                "Sun 2003 body fat (${estimate.source.label}) + Chipsea/ICOMON WLA25 derivation"
-            impedanceForMeta = estimate.wholeBodyOhm
-            BleLogger.w("WLA37 unavailable; fell back to ${estimate.source.label}")
         }
-
-        val fat = bodyFatPercent!!
-        val segmentalImps = imps ?: Ssw532ImpedanceMap.toWla25(channelAOhm, channelBOhm, segmentsOhm)
+        val algorithmLabel = "ICOMON WLA37 (official) + WLA25 derivation"
+        val wholeBodyOhm = imps[1]
 
         val wla = Wla25.derive(
             heightCm = heightCm.toInt(),
@@ -99,7 +66,7 @@ object BodyCompositionBuilder {
             age = age,
             sexMale1 = sex,
             bodyFatPercentRaw = fat,
-            imps = segmentalImps,
+            imps = imps,
         )
 
         BleLogger.i(
@@ -135,14 +102,10 @@ object BodyCompositionBuilder {
             obesityDegree = ((weightKg / ideal) - 1f) * 100f,
             idealWeightKg = ideal,
             bodyScore = wla.bodyScore.toFloat(),
-            impedance = impedanceForMeta,
-            h2rCoeff = heightCm.toDouble() * heightCm.toDouble() / impedanceForMeta.coerceAtLeast(1.0),
-            channelAOhm = channelAOhm,
-            channelBOhm = channelBOhm,
+            impedance = wholeBodyOhm,
+            h2rCoeff = heightCm.toDouble() * heightCm.toDouble() / wholeBodyOhm.coerceAtLeast(1.0),
             pkt0Cmd = pkt0Cmd,
-            pkt0ValidFlag = pkt0ValidFlag,
-            zSegments = segmentsOhm.map { it.toFloat() },
-            wla25Inputs = segmentalImps?.map { it.toFloat() } ?: emptyList(),
+            impedances = imps.map { it.toFloat() },
             segments = wla.segments.map {
                 SegmentMetrics(
                     name = it.name,
